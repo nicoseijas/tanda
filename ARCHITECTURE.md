@@ -14,7 +14,8 @@ src/
     ├── cancellation.py   # global cancellation state
     ├── results.py        # TaskResult / TaskFailure / BatchResult
     ├── exceptions.py     # stable public errors (TaskError, ...)
-    └── _scheduler.py     # bounded submission, future lifecycle
+    ├── _scheduler.py     # bounded submission, future lifecycle
+    └── _states.py        # task state machine (states + legal transitions)
 ```
 
 Responsibilities:

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tanda"
+version = "0.1.0.dev0"
+description = "A small execution layer over ThreadPoolExecutor: bounded memory, progress, retries, timeouts, cancellation."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Nico Seijas" }]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tanda"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
