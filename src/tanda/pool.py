@@ -8,15 +8,28 @@ cancel its futures, which is why no executor parameter is accepted.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from typing import TypeVar, cast
 
-from tanda._scheduler import BoundedScheduler, default_max_pending
+from tanda._scheduler import BoundedScheduler, WorkItem, default_max_pending
 from tanda._states import TaskState
 
 T = TypeVar("T")
 R = TypeVar("R")
+
+
+def _successful_value(work: WorkItem[T, R]) -> R:
+    """Unwrap a completed WorkItem: return its value or raise its failure."""
+    if work.state is TaskState.SUCCESS:
+        return cast(R, work.value)
+    if work.state is TaskState.FAILED:
+        assert work.exception is not None
+        raise work.exception
+    # No other terminal state is producible yet — fail loudly.
+    raise RuntimeError(
+        f"unexpected terminal state {work.state} for item {work.index}"
+    )
 
 
 def _default_workers() -> int:
@@ -40,8 +53,9 @@ class Pool:
     must not call back into the same pool — with all workers busy, the inner
     call would wait for slots that can only be freed by the very tasks doing
     the waiting. Not thread-safe either: calling ``close()`` (or exiting the
-    ``with`` block) while another thread is inside ``map()`` can hang that
-    thread permanently (see BoundedScheduler), and concurrent ``map()`` calls
+    ``with`` block) while another thread is inside ``map()`` or consuming an
+    ``imap_unordered()`` stream can hang that thread permanently (see
+    BoundedScheduler), and concurrent ``map()``/``imap_unordered()`` calls
     would each get their own ``max_pending`` window, breaking the pool-wide
     bound. Drive everything from the owning thread.
 
@@ -95,16 +109,7 @@ class Pool:
         completion_stream = scheduler.run(items, fn)
         try:
             for work in completion_stream:
-                if work.state is TaskState.SUCCESS:
-                    completed_values[work.index] = cast(R, work.value)
-                elif work.state is TaskState.FAILED:
-                    assert work.exception is not None
-                    raise work.exception
-                else:  # no other terminal state is producible yet — fail loudly
-                    raise RuntimeError(
-                        f"unexpected terminal state {work.state} for item "
-                        f"{work.index}"
-                    )
+                completed_values[work.index] = _successful_value(work)
         finally:
             # Deterministic cleanup: cancel pending tasks now, not at GC.
             completion_stream.close()
@@ -115,6 +120,51 @@ class Pool:
                 "internal invariant violated: non-contiguous result indices "
                 f"(missing {exc.args[0]})"
             ) from exc
+
+    def imap_unordered(
+        self, items: Iterable[T], fn: Callable[[T], R]
+    ) -> Iterator[R]:
+        """Apply ``fn`` to every item, yielding results as they complete.
+
+        Completion order, not input order — use this to consume results
+        immediately. The stream is lazy end to end: a slow consumer applies
+        backpressure to submission instead of accumulating results. Error
+        semantics match ``map()`` — the first definitive failure cancels
+        pending tasks and re-raises. If you stop consuming early, close the
+        iterator (a ``for`` loop's ``break`` does not; ``close()`` or
+        exhausting it does) — an abandoned iterator only cleans up when the
+        GC finalizes it.
+        """
+        if self._scheduler is None:
+            # Raise here, at call time, not lazily inside the generator.
+            raise RuntimeError("Pool is closed")
+        return self._stream_unordered(items, fn)
+
+    def _stream_unordered(
+        self, items: Iterable[T], fn: Callable[[T], R]
+    ) -> Iterator[R]:
+        # The pool's closed state is re-checked before every resumption: a
+        # same-thread close() while this generator is suspended leaves
+        # drained futures in plain CANCELLED, and re-entering the
+        # scheduler's wait() over those would hang forever (see
+        # BoundedScheduler). Failing loudly here makes that impossible.
+        scheduler = self._scheduler
+        if scheduler is None:
+            raise RuntimeError("Pool is closed")
+        completion_stream = scheduler.run(items, fn)
+        try:
+            while True:
+                if self._scheduler is None:
+                    raise RuntimeError("Pool was closed while streaming")
+                try:
+                    work = next(completion_stream)
+                except StopIteration:
+                    return
+                yield _successful_value(work)
+        finally:
+            # Runs on close(), exhaustion, or an in-flight failure: cancel
+            # not-yet-started tasks deterministically.
+            completion_stream.close()
 
     def close(self) -> None:
         """Shut down the pool, waiting for running tasks. Idempotent."""
