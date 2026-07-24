@@ -14,6 +14,8 @@ class TaskError(Exception):
     elapsed execution time in seconds.
     """
 
+    _VERB = "failed"
+
     def __init__(
         self,
         item: Any,
@@ -28,6 +30,25 @@ class TaskError(Exception):
         self.attempts = attempts
         self.elapsed = elapsed
         super().__init__(
-            f"item {index} failed after {attempts} attempt(s) in "
+            f"item {index} {self._VERB} after {attempts} attempt(s) in "
             f"{elapsed:.3f}s: {exception!r}"
         )
+
+
+class TaskTimeout(TaskError):
+    """An item exceeded ``task_timeout``.
+
+    Honest semantics: Python cannot kill a running thread. The underlying
+    call may still be executing when this is raised; its eventual result is
+    discarded, and the occupied worker only frees up when the call returns.
+    ``exception`` holds the ``TimeoutError`` that describes the deadline.
+    """
+
+    _VERB = "timed out"
+
+
+class OverallTimeout(Exception):
+    """The whole ``map()``/``imap_unordered()`` call exceeded
+    ``overall_timeout``. Pending tasks are cancelled; running tasks finish in
+    the background. Raised under every error policy — a partial batch is
+    never silently returned."""

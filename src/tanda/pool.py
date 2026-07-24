@@ -14,7 +14,7 @@ from typing import Literal, NoReturn, TypeVar, cast, overload
 
 from tanda._scheduler import BoundedScheduler, WorkItem, default_max_pending
 from tanda._states import TaskState
-from tanda.exceptions import TaskError
+from tanda.exceptions import TaskError, TaskTimeout
 from tanda.results import BatchResult, TaskFailure, TaskResult
 from tanda.retry import RetryPolicy
 
@@ -24,12 +24,23 @@ R = TypeVar("R")
 ErrorPolicy = Literal["raise", "collect"]
 _ERROR_POLICIES = ("raise", "collect")
 
+_FAILURE_STATES = (TaskState.FAILED, TaskState.TIMED_OUT)
+
+
+def _validate_timeouts(
+    task_timeout: float | None, overall_timeout: float | None
+) -> None:
+    if task_timeout is not None and task_timeout <= 0:
+        raise ValueError(f"task_timeout must be > 0, got {task_timeout}")
+    if overall_timeout is not None and overall_timeout <= 0:
+        raise ValueError(f"overall_timeout must be > 0, got {overall_timeout}")
+
 
 def _successful_value(work: WorkItem[T, R]) -> R:
     """Unwrap a completed WorkItem: return its value or raise TaskError."""
     if work.state is TaskState.SUCCESS:
         return cast(R, work.value)
-    if work.state is TaskState.FAILED:
+    if work.state in _FAILURE_STATES:
         assert work.exception is not None
         if not isinstance(work.exception, Exception):
             # KeyboardInterrupt/SystemExit must keep their category: wrapping
@@ -37,7 +48,10 @@ def _successful_value(work: WorkItem[T, R]) -> R:
             # KeyboardInterrupt` around map() silently stop matching,
             # breaking the Ctrl+C contract in GUIDELINES.md.
             raise work.exception
-        raise TaskError(
+        error_type = (
+            TaskTimeout if work.state is TaskState.TIMED_OUT else TaskError
+        )
+        raise error_type(
             item=work.item,
             index=work.index,
             exception=work.exception,
@@ -84,6 +98,11 @@ class Pool:
     On KeyboardInterrupt inside ``map()``, pending tasks are cancelled
     immediately; the executor itself is shut down by ``__exit__``/``close()``
     — one more reason the ``with`` block is the primary path.
+
+    ``close()`` waits for running tasks — including executions already
+    declared timed out, which cannot be killed. A task stuck forever will
+    hang ``close()`` forever, even though ``map()`` itself returned at the
+    deadline.
     """
 
     def __init__(
@@ -121,6 +140,8 @@ class Pool:
         fn: Callable[[T], R],
         *,
         retry: RetryPolicy | None = None,
+        task_timeout: float | None = None,
+        overall_timeout: float | None = None,
         error_policy: Literal["raise"] = "raise",
     ) -> list[R]: ...
 
@@ -131,6 +152,8 @@ class Pool:
         fn: Callable[[T], R],
         *,
         retry: RetryPolicy | None = None,
+        task_timeout: float | None = None,
+        overall_timeout: float | None = None,
         error_policy: Literal["collect"],
     ) -> BatchResult[T, R]: ...
 
@@ -140,6 +163,8 @@ class Pool:
         fn: Callable[[T], R],
         *,
         retry: RetryPolicy | None = None,
+        task_timeout: float | None = None,
+        overall_timeout: float | None = None,
         error_policy: ErrorPolicy = "raise",
     ) -> list[R] | BatchResult[T, R]:
         """Apply ``fn`` to every item, returning results in input order.
@@ -148,6 +173,15 @@ class Pool:
         re-executed up to ``retry.max_attempts`` total runs (with backoff)
         before counting as definitive; retrying is only safe for idempotent
         operations — see :class:`RetryPolicy`.
+
+        ``task_timeout`` bounds each *execution* (queue time never counts).
+        Honest semantics: Python cannot kill a running thread — a timed-out
+        task raises :class:`TaskTimeout` (or becomes a TaskFailure in collect
+        mode, or retries when the policy matches TimeoutError — note the
+        default ``retry_on=(Exception,)`` does match it) while the underlying
+        call keeps running until it returns; its late result is discarded.
+        ``overall_timeout`` bounds the whole call and raises
+        :class:`OverallTimeout` under every error policy.
 
         With ``error_policy="raise"`` (default), the first definitive failure
         cancels not-yet-started tasks and raises :class:`TaskError` — which
@@ -174,13 +208,16 @@ class Pool:
             raise ValueError(
                 f"error_policy must be 'raise' or 'collect', got {error_policy!r}"
             )
+        _validate_timeouts(task_timeout, overall_timeout)
         scheduler = self._scheduler
         if scheduler is None:
             raise RuntimeError("Pool is closed")
         if error_policy == "collect":
-            return _collect(scheduler, items, fn, retry)
+            return _collect(scheduler, items, fn, retry, task_timeout, overall_timeout)
         completed_values: dict[int, R] = {}
-        completion_stream = scheduler.run(items, fn, retry)
+        completion_stream = scheduler.run(
+            items, fn, retry, task_timeout, overall_timeout
+        )
         try:
             for work in completion_stream:
                 completed_values[work.index] = _successful_value(work)
@@ -201,6 +238,8 @@ class Pool:
         fn: Callable[[T], R],
         *,
         retry: RetryPolicy | None = None,
+        task_timeout: float | None = None,
+        overall_timeout: float | None = None,
     ) -> Iterator[R]:
         """Apply ``fn`` to every item, yielding results as they complete.
 
@@ -213,16 +252,19 @@ class Pool:
         exhausting it does) — an abandoned iterator only cleans up when the
         GC finalizes it.
         """
+        _validate_timeouts(task_timeout, overall_timeout)
         if self._scheduler is None:
             # Raise here, at call time, not lazily inside the generator.
             raise RuntimeError("Pool is closed")
-        return self._stream_unordered(items, fn, retry)
+        return self._stream_unordered(items, fn, retry, task_timeout, overall_timeout)
 
     def _stream_unordered(
         self,
         items: Iterable[T],
         fn: Callable[[T], R],
         retry: RetryPolicy | None,
+        task_timeout: float | None,
+        overall_timeout: float | None,
     ) -> Iterator[R]:
         # The pool's closed state is re-checked before every resumption: a
         # same-thread close() while this generator is suspended leaves
@@ -232,7 +274,9 @@ class Pool:
         scheduler = self._scheduler
         if scheduler is None:
             raise RuntimeError("Pool is closed")
-        completion_stream = scheduler.run(items, fn, retry)
+        completion_stream = scheduler.run(
+            items, fn, retry, task_timeout, overall_timeout
+        )
         try:
             while True:
                 if self._scheduler is None:
@@ -270,10 +314,12 @@ def _collect(
     items: Iterable[T],
     fn: Callable[[T], R],
     retry: RetryPolicy | None,
+    task_timeout: float | None,
+    overall_timeout: float | None,
 ) -> BatchResult[T, R]:
     successful: list[TaskResult[T, R]] = []
     failed: list[TaskFailure[T]] = []
-    completion_stream = scheduler.run(items, fn, retry)
+    completion_stream = scheduler.run(items, fn, retry, task_timeout, overall_timeout)
     try:
         for work in completion_stream:
             if work.state is TaskState.SUCCESS:
@@ -286,7 +332,7 @@ def _collect(
                         elapsed=work.elapsed,
                     )
                 )
-            elif work.state is TaskState.FAILED:
+            elif work.state in _FAILURE_STATES:
                 assert work.exception is not None
                 if not isinstance(work.exception, Exception):
                     # Collecting a KeyboardInterrupt/SystemExit would suppress

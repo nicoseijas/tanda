@@ -161,6 +161,42 @@ def test_imap_unordered_supports_retry():
     assert fn.calls == {5: 3}
 
 
+def test_window_invariant_holds_with_retries():
+    # Items in retry backoff must keep occupying a window slot: at any pull,
+    # items-pulled minus items-finished can never exceed max_pending. The
+    # "done" counter increments slightly before the coordinator observes the
+    # completion, so the check is lenient in that direction only.
+    max_pending = 3
+    lock = threading.Lock()
+    counters = {"pulled": 0, "done": 0}
+    violations: list[int] = []
+
+    def items():
+        for i in range(50):
+            with lock:
+                counters["pulled"] += 1
+                overhang = counters["pulled"] - counters["done"]
+                if overhang > max_pending:
+                    violations.append(overhang)
+            yield i
+
+    flaky = Flaky(failures=1)
+
+    def fn(item):
+        value = flaky(item)  # first execution per item raises
+        with lock:
+            counters["done"] += 1
+        return value
+
+    with Pool(workers=2, max_pending=max_pending) as pool:
+        batch = pool.map(
+            items(), fn, retry=RetryPolicy(max_attempts=2), error_policy="collect"
+        )
+
+    assert violations == []
+    assert len(batch.successful) == 50
+
+
 # --- backoff timing ----------------------------------------------------------
 
 

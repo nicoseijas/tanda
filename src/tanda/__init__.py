@@ -4,7 +4,7 @@ Everything under a leading underscore is internal and may change without
 notice.
 """
 
-from tanda.exceptions import TaskError
+from tanda.exceptions import OverallTimeout, TaskError, TaskTimeout
 from tanda.pool import Pool
 from tanda.results import BatchResult, TaskFailure, TaskResult
 from tanda.retry import RetryPolicy
@@ -13,9 +13,11 @@ __version__ = "0.1.0.dev0"
 
 __all__ = [
     "BatchResult",
+    "OverallTimeout",
     "Pool",
     "RetryPolicy",
     "TaskError",
     "TaskFailure",
     "TaskResult",
+    "TaskTimeout",
 ]

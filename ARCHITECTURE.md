@@ -108,10 +108,20 @@ slot, which pulls one more item. Consequences:
 
 ## Timeout handling
 
-`task_timeout` is enforced from the coordinator's perspective (the future's
-result is awaited with a deadline), not by killing threads — Python cannot do
-that. A timed-out task transitions to `TIMED_OUT` (or `RETRY_WAIT` if the
-policy retries timeouts) while its worker thread may still be executing. The
-scheduler must account for this: a "leaked" running task still occupies a
-worker until its function returns, and shutdown must decide whether to wait
-for it (shutdown timeout) or abandon it.
+`task_timeout` is enforced by the coordinator, not by killing threads —
+Python cannot do that. The clock is per *execution*: the worker stamps
+`started_at` when it begins an item, and queue time never counts.
+
+Timeouts break the sequential ownership hand-off: the coordinator may
+finalize an item the worker still holds. Every finalizing transition is
+therefore a compare-and-set under the item's own lock — whoever finalizes
+first wins, and the loser's outcome is dropped (a timed-out execution's late
+result goes nowhere). This is the same mechanism cooperative cancellation
+(#6) needs.
+
+A timed-out task's future moves to an *abandoned* set: it keeps occupying a
+window slot (the worker is genuinely busy) until the function returns, at
+which point the slot frees. If the retry policy matches `TimeoutError`, the
+item is *cloned* into `RETRY_WAIT` — the original stays with the abandoned
+execution, which can no longer touch the clone. `overall_timeout` is a
+single coordinator deadline that raises under every error policy.

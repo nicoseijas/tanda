@@ -162,7 +162,7 @@ Three distinct concepts, three distinct names — never a bare `timeout`:
 
 | Name | Scope |
 |---|---|
-| `task_timeout` | maximum logical time per item |
+| `task_timeout` | maximum time per *execution* of an item — the clock starts when the worker begins it; queue time never counts |
 | `overall_timeout` | maximum time for the entire `map()` call |
 | shutdown timeout | how long `__exit__` waits for running tasks |
 
@@ -269,7 +269,8 @@ vocabulary: `Pool`, `Job`, `WorkItem`, `BatchResult`, `RetryPolicy`,
 ```python
 Pool(workers=None, max_pending=None)
 
-pool.map(items, fn, *, progress=False, retry=None, task_timeout=None)
+pool.map(items, fn, *, progress=False, retry=None,
+         task_timeout=None, overall_timeout=None)
 pool.imap_unordered(...)
 
 RetryPolicy(max_attempts=3, retry_on=(Exception,), backoff=0.0,
