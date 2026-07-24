@@ -15,6 +15,7 @@ a pickled copy of the item and silently discard results.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import Any, Generic, TypeVar
@@ -38,7 +39,7 @@ class WorkItem(Generic[T, R]):
     future — the future only signals completion.
     """
 
-    __slots__ = ("index", "item", "state", "value", "exception")
+    __slots__ = ("index", "item", "state", "value", "exception", "attempts", "elapsed")
 
     def __init__(self, index: int, item: T) -> None:
         self.index = index
@@ -46,6 +47,8 @@ class WorkItem(Generic[T, R]):
         self.state = TaskState.PENDING
         self.value: R | None = None
         self.exception: BaseException | None = None
+        self.attempts = 1  # retry (#4) increments this on re-execution
+        self.elapsed = 0.0  # seconds spent executing fn, across the last run
 
     def transition_to(self, new_state: TaskState) -> None:
         """Advance the lifecycle; raises InvalidStateTransition on a tanda bug."""
@@ -125,6 +128,7 @@ class BoundedScheduler:
 def _run_one(work: WorkItem[T, R], fn: Callable[[T], R]) -> None:
     """Runs on a worker thread; the worker owns ``work`` until it returns."""
     work.transition_to(TaskState.RUNNING)
+    start = time.perf_counter()
     try:
         result = fn(work.item)
     except Exception as exc:
@@ -133,6 +137,9 @@ def _run_one(work: WorkItem[T, R], fn: Callable[[T], R]) -> None:
     else:
         work.value = result
         work.transition_to(TaskState.SUCCESS)
+    finally:
+        # Also runs when a BaseException escapes toward the future.
+        work.elapsed = time.perf_counter() - start
 
 
 def _record_escaped_exception(

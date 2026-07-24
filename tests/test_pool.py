@@ -80,13 +80,16 @@ def test_map_preserves_none_results():
 # --- map: errors ------------------------------------------------------------
 
 
-def test_worker_exception_propagates_unchanged():
+def test_worker_exception_raises_task_error_with_cause():
+    from tanda import TaskError
+
     def fn(item):
         raise ValueError(f"bad item {item}")
 
     with Pool(workers=2) as pool:
-        with pytest.raises(ValueError, match="bad item"):
+        with pytest.raises(TaskError) as excinfo:
             pool.map([1], fn)
+    assert isinstance(excinfo.value.__cause__, ValueError)
 
 
 def test_map_raises_on_first_failure_without_draining():
@@ -103,9 +106,11 @@ def test_map_raises_on_first_failure_without_draining():
         assert gate.wait(WAIT)
         return item
 
+    from tanda import TaskError
+
     with Pool(workers=2, max_pending=2) as pool:
         start = time.perf_counter()
-        with pytest.raises(ValueError, match="boom"):
+        with pytest.raises(TaskError):
             pool.map([1, 0], fn)  # item 1 pins a worker; item 0 fails fast
         elapsed = time.perf_counter() - start
         gate.set()
@@ -154,11 +159,13 @@ def test_pool_is_reusable_across_map_calls():
 
 
 def test_pool_is_reusable_after_a_failed_map():
+    from tanda import TaskError
+
     def failing(item):
         raise ValueError("boom")
 
     with Pool(workers=2) as pool:
-        with pytest.raises(ValueError, match="boom"):
+        with pytest.raises(TaskError):
             pool.map([1, 2], failing)
         assert pool.map([1, 2], lambda x: x + 1) == [2, 3]
 

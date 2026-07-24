@@ -68,12 +68,14 @@ def test_infinite_input_stays_bounded():
     assert last_pulled[0] <= (5 + 1) * max_pending
 
 
-def test_worker_exception_propagates_unchanged():
+def test_worker_exception_raises_task_error():
+    from tanda import TaskError
+
     def fn(item):
         raise ValueError(f"bad item {item}")
 
     with Pool(workers=2) as pool:
-        with pytest.raises(ValueError, match="bad item"):
+        with pytest.raises(TaskError, match="ValueError"):
             list(pool.imap_unordered([1], fn))
 
 

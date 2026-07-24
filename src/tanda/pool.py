@@ -10,23 +10,44 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
-from typing import TypeVar, cast
+from typing import Literal, NoReturn, TypeVar, cast, overload
 
 from tanda._scheduler import BoundedScheduler, WorkItem, default_max_pending
 from tanda._states import TaskState
+from tanda.exceptions import TaskError
+from tanda.results import BatchResult, TaskFailure, TaskResult
 
 T = TypeVar("T")
 R = TypeVar("R")
 
+ErrorPolicy = Literal["raise", "collect"]
+_ERROR_POLICIES = ("raise", "collect")
+
 
 def _successful_value(work: WorkItem[T, R]) -> R:
-    """Unwrap a completed WorkItem: return its value or raise its failure."""
+    """Unwrap a completed WorkItem: return its value or raise TaskError."""
     if work.state is TaskState.SUCCESS:
         return cast(R, work.value)
     if work.state is TaskState.FAILED:
         assert work.exception is not None
-        raise work.exception
-    # No other terminal state is producible yet — fail loudly.
+        if not isinstance(work.exception, Exception):
+            # KeyboardInterrupt/SystemExit must keep their category: wrapping
+            # them in TaskError (an Exception) would make `except
+            # KeyboardInterrupt` around map() silently stop matching,
+            # breaking the Ctrl+C contract in GUIDELINES.md.
+            raise work.exception
+        raise TaskError(
+            item=work.item,
+            index=work.index,
+            exception=work.exception,
+            attempts=work.attempts,
+            elapsed=work.elapsed,
+        ) from work.exception
+    _unexpected_terminal_state(work)
+
+
+def _unexpected_terminal_state(work: WorkItem[T, R]) -> NoReturn:
+    # No terminal state beyond SUCCESS/FAILED is producible yet — fail loudly.
     raise RuntimeError(
         f"unexpected terminal state {work.state} for item {work.index}"
     )
@@ -92,19 +113,63 @@ class Pool:
     def max_pending(self) -> int:
         return self._max_pending
 
-    def map(self, items: Iterable[T], fn: Callable[[T], R]) -> list[R]:
+    @overload
+    def map(
+        self,
+        items: Iterable[T],
+        fn: Callable[[T], R],
+        *,
+        error_policy: Literal["raise"] = "raise",
+    ) -> list[R]: ...
+
+    @overload
+    def map(
+        self,
+        items: Iterable[T],
+        fn: Callable[[T], R],
+        *,
+        error_policy: Literal["collect"],
+    ) -> BatchResult[T, R]: ...
+
+    def map(
+        self,
+        items: Iterable[T],
+        fn: Callable[[T], R],
+        *,
+        error_policy: ErrorPolicy = "raise",
+    ) -> list[R] | BatchResult[T, R]:
         """Apply ``fn`` to every item, returning results in input order.
 
-        The first definitive failure cancels not-yet-started tasks and
-        re-raises the worker's exception immediately (fail fast); running
-        tasks cannot be stopped and finish in the background. The re-raised
-        exception keeps its worker-thread traceback, so it pins those frames
-        (and their locals) for as long as the caller holds it. Error policies
-        and structured errors (TaskError, collect mode) arrive with #7.
+        With ``error_policy="raise"`` (default), the first definitive failure
+        cancels not-yet-started tasks and raises :class:`TaskError` — which
+        carries the item, index, underlying exception (also chained as
+        ``__cause__``), attempts, and elapsed time. Running tasks cannot be
+        stopped and finish in the background. The chained exception keeps its
+        worker-thread traceback, so it pins those frames (and their locals)
+        for as long as the caller holds it.
+
+        With ``error_policy="collect"``, every item runs regardless of
+        failures and the return value is a :class:`BatchResult` with
+        ``successful`` and ``failed`` lists (both ordered by input index) —
+        never a mixed list of results and exceptions.
+
+        Exceptions raised by the input iterable itself are the caller's bug
+        and propagate unwrapped under both policies, as do BaseExceptions
+        (KeyboardInterrupt, SystemExit) escaping the task function.
+
+        Note for type-checker users: the overloads key on literal policy
+        values; a dynamically chosen policy needs an explicit branch or a
+        ``cast``.
         """
+        if error_policy not in _ERROR_POLICIES:
+            raise ValueError(
+                f"error_policy must be 'raise' or 'collect', got {error_policy!r}"
+            )
         scheduler = self._scheduler
         if scheduler is None:
             raise RuntimeError("Pool is closed")
+        if error_policy == "collect":
+            return _collect(scheduler, items, fn)
         completed_values: dict[int, R] = {}
         completion_stream = scheduler.run(items, fn)
         try:
@@ -182,3 +247,45 @@ class Pool:
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
+
+
+def _collect(
+    scheduler: BoundedScheduler, items: Iterable[T], fn: Callable[[T], R]
+) -> BatchResult[T, R]:
+    successful: list[TaskResult[T, R]] = []
+    failed: list[TaskFailure[T]] = []
+    completion_stream = scheduler.run(items, fn)
+    try:
+        for work in completion_stream:
+            if work.state is TaskState.SUCCESS:
+                successful.append(
+                    TaskResult(
+                        item=work.item,
+                        index=work.index,
+                        value=cast(R, work.value),
+                        attempts=work.attempts,
+                        elapsed=work.elapsed,
+                    )
+                )
+            elif work.state is TaskState.FAILED:
+                assert work.exception is not None
+                if not isinstance(work.exception, Exception):
+                    # Collecting a KeyboardInterrupt/SystemExit would suppress
+                    # it; category-preserving propagation wins over collect.
+                    raise work.exception
+                failed.append(
+                    TaskFailure(
+                        item=work.item,
+                        index=work.index,
+                        exception=work.exception,
+                        attempts=work.attempts,
+                        elapsed=work.elapsed,
+                    )
+                )
+            else:
+                _unexpected_terminal_state(work)
+    finally:
+        completion_stream.close()
+    successful.sort(key=lambda r: r.index)
+    failed.sort(key=lambda f: f.index)
+    return BatchResult(successful=tuple(successful), failed=tuple(failed))
