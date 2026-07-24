@@ -54,6 +54,19 @@ class WorkItem(Generic[T, R]):
 
 
 class BoundedScheduler:
+    """Coordinator-driven scheduler over a borrowed ThreadPoolExecutor.
+
+    The executor is borrowed for *exclusive* use: while ``run()`` is
+    iterating, nothing else may shut the executor down or cancel its
+    futures. ``shutdown(cancel_futures=True)`` from another thread drains
+    the queue and leaves those futures permanently in CANCELLED — never
+    CANCELLED_AND_NOTIFIED, which only a worker's
+    ``set_running_or_notify_cancel()`` sets — and ``concurrent.futures.wait``
+    never reports plain-CANCELLED futures as done, so the coordinator would
+    block forever. The Pool layer must therefore own its executor outright
+    and drive shutdown from the coordinator thread only.
+    """
+
     def __init__(self, executor: ThreadPoolExecutor, max_pending: int) -> None:
         if not isinstance(executor, ThreadPoolExecutor):
             raise TypeError(
