@@ -7,6 +7,7 @@ cancel its futures, which is why no executor parameter is accepted.
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -15,6 +16,7 @@ from typing import Literal, NoReturn, TypeVar, cast, overload
 from tanda._scheduler import BoundedScheduler, WorkItem, default_max_pending
 from tanda._states import TaskState
 from tanda.cancellation import Cancellation
+from tanda.progress import DefaultProgress, ProgressReporter
 from tanda.exceptions import Cancelled, TaskError, TaskTimeout
 from tanda.results import BatchResult, TaskFailure, TaskResult
 from tanda.retry import RetryPolicy
@@ -22,10 +24,42 @@ from tanda.retry import RetryPolicy
 T = TypeVar("T")
 R = TypeVar("R")
 
+logger = logging.getLogger("tanda")
+
 ErrorPolicy = Literal["raise", "collect"]
 _ERROR_POLICIES = ("raise", "collect")
 
+
+def _report(reporter_call: Callable[..., None], *args: object) -> None:
+    """Progress is an observation and never controls execution: a reporter's
+    own Exception must not outrank or replace the task outcome the caller is
+    about to receive. Logged, never propagated (BaseExceptions still do)."""
+    try:
+        reporter_call(*args)
+    except Exception:
+        logger.warning("progress reporter raised; ignoring", exc_info=True)
+
 _FAILURE_STATES = (TaskState.FAILED, TaskState.TIMED_OUT)
+
+
+def _resolve_reporter(progress: bool | ProgressReporter) -> ProgressReporter | None:
+    if progress is False or progress is None:
+        return None
+    if progress is True:
+        return DefaultProgress()
+    if all(callable(getattr(progress, m, None)) for m in ("start", "advance", "finish")):
+        return progress
+    raise TypeError(
+        "progress must be a bool or an object with start/advance/finish, "
+        f"got {type(progress).__name__}"
+    )
+
+
+def _total_of(items: Iterable[object]) -> int | None:
+    try:
+        return len(items)  # type: ignore[arg-type]
+    except TypeError:
+        return None  # unsized input: never materialized just to count it
 
 
 def _validate_timeouts(
@@ -147,6 +181,7 @@ class Pool:
         task_timeout: float | None = None,
         overall_timeout: float | None = None,
         cancel: Cancellation | None = None,
+        progress: bool | ProgressReporter = False,
         error_policy: Literal["raise"] = "raise",
     ) -> list[R]: ...
 
@@ -160,6 +195,7 @@ class Pool:
         task_timeout: float | None = None,
         overall_timeout: float | None = None,
         cancel: Cancellation | None = None,
+        progress: bool | ProgressReporter = False,
         error_policy: Literal["collect"],
     ) -> BatchResult[T, R]: ...
 
@@ -172,6 +208,7 @@ class Pool:
         task_timeout: float | None = None,
         overall_timeout: float | None = None,
         cancel: Cancellation | None = None,
+        progress: bool | ProgressReporter = False,
         error_policy: ErrorPolicy = "raise",
     ) -> list[R] | BatchResult[T, R]:
         """Apply ``fn`` to every item, returning results in input order.
@@ -216,23 +253,37 @@ class Pool:
                 f"error_policy must be 'raise' or 'collect', got {error_policy!r}"
             )
         _validate_timeouts(task_timeout, overall_timeout)
+        reporter = _resolve_reporter(progress)
         scheduler = self._scheduler
         if scheduler is None:
             raise RuntimeError("Pool is closed")
         if error_policy == "collect":
             return _collect(
-                scheduler, items, fn, retry, task_timeout, overall_timeout, cancel
+                scheduler,
+                items,
+                fn,
+                retry,
+                task_timeout,
+                overall_timeout,
+                cancel,
+                reporter,
             )
+        if reporter is not None:
+            _report(reporter.start, _total_of(items))
         completed_values: dict[int, R] = {}
         completion_stream = scheduler.run(
             items, fn, retry, task_timeout, overall_timeout, cancel
         )
         try:
             for work in completion_stream:
+                if reporter is not None:
+                    _report(reporter.advance)
                 completed_values[work.index] = _successful_value(work)
         finally:
             # Deterministic cleanup: cancel pending tasks now, not at GC.
             completion_stream.close()
+            if reporter is not None:
+                _report(reporter.finish)
         try:
             return [completed_values[i] for i in range(len(completed_values))]
         except KeyError as exc:
@@ -250,6 +301,7 @@ class Pool:
         task_timeout: float | None = None,
         overall_timeout: float | None = None,
         cancel: Cancellation | None = None,
+        progress: bool | ProgressReporter = False,
     ) -> Iterator[R]:
         """Apply ``fn`` to every item, yielding results as they complete.
 
@@ -260,14 +312,22 @@ class Pool:
         pending tasks and re-raises. If you stop consuming early, close the
         iterator (a ``for`` loop's ``break`` does not; ``close()`` or
         exhausting it does) — an abandoned iterator only cleans up when the
-        GC finalizes it.
+        GC finalizes it. With ``progress``, the reporter starts eagerly at
+        call time, but ``finish()`` lives in the stream's cleanup: a stream
+        that is never iterated (nor closed after starting) leaves the
+        reporter started and never finished.
         """
         _validate_timeouts(task_timeout, overall_timeout)
         if self._scheduler is None:
             # Raise here, at call time, not lazily inside the generator.
             raise RuntimeError("Pool is closed")
+        reporter = _resolve_reporter(progress)
+        if reporter is not None:
+            # Eager, like the closed-check: the display exists (and shows the
+            # total) as soon as the stream is created, not at first next().
+            _report(reporter.start, _total_of(items))
         return self._stream_unordered(
-            items, fn, retry, task_timeout, overall_timeout, cancel
+            items, fn, retry, task_timeout, overall_timeout, cancel, reporter
         )
 
     def _stream_unordered(
@@ -278,6 +338,7 @@ class Pool:
         task_timeout: float | None,
         overall_timeout: float | None,
         cancel: Cancellation | None,
+        reporter: ProgressReporter | None,
     ) -> Iterator[R]:
         # The pool's closed state is re-checked before every resumption: a
         # same-thread close() while this generator is suspended leaves
@@ -298,11 +359,15 @@ class Pool:
                     work = next(completion_stream)
                 except StopIteration:
                     return
+                if reporter is not None:
+                    _report(reporter.advance)
                 yield _successful_value(work)
         finally:
             # Runs on close(), exhaustion, or an in-flight failure: cancel
             # not-yet-started tasks deterministically.
             completion_stream.close()
+            if reporter is not None:
+                _report(reporter.finish)
 
     def close(self) -> None:
         """Shut down the pool, waiting for running tasks. Idempotent."""
@@ -330,14 +395,19 @@ def _collect(
     task_timeout: float | None,
     overall_timeout: float | None,
     cancel: Cancellation | None,
+    reporter: ProgressReporter | None,
 ) -> BatchResult[T, R]:
     successful: list[TaskResult[T, R]] = []
     failed: list[TaskFailure[T]] = []
+    if reporter is not None:
+        _report(reporter.start, _total_of(items))
     completion_stream = scheduler.run(
         items, fn, retry, task_timeout, overall_timeout, cancel
     )
     try:
         for work in completion_stream:
+            if reporter is not None:
+                _report(reporter.advance)
             if work.state is TaskState.SUCCESS:
                 successful.append(
                     TaskResult(
@@ -372,6 +442,8 @@ def _collect(
                 _unexpected_terminal_state(work)
     finally:
         completion_stream.close()
+        if reporter is not None:
+            _report(reporter.finish)
     successful.sort(key=lambda r: r.index)
     failed.sort(key=lambda f: f.index)
     return BatchResult(successful=tuple(successful), failed=tuple(failed))

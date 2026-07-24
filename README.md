@@ -102,6 +102,8 @@ the task state machine — are written down before the code:
 - [ARCHITECTURE.md](ARCHITECTURE.md) — module layout, task state machine,
   threading model
 - [CONTRIBUTING.md](CONTRIBUTING.md) — testing and benchmark requirements
+- [examples/](examples/) — runnable scripts (progress bars, retries,
+  callbacks)
 
 ## Status
 
