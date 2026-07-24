@@ -16,6 +16,7 @@ from tanda._scheduler import BoundedScheduler, WorkItem, default_max_pending
 from tanda._states import TaskState
 from tanda.exceptions import TaskError
 from tanda.results import BatchResult, TaskFailure, TaskResult
+from tanda.retry import RetryPolicy
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -119,6 +120,7 @@ class Pool:
         items: Iterable[T],
         fn: Callable[[T], R],
         *,
+        retry: RetryPolicy | None = None,
         error_policy: Literal["raise"] = "raise",
     ) -> list[R]: ...
 
@@ -128,6 +130,7 @@ class Pool:
         items: Iterable[T],
         fn: Callable[[T], R],
         *,
+        retry: RetryPolicy | None = None,
         error_policy: Literal["collect"],
     ) -> BatchResult[T, R]: ...
 
@@ -136,9 +139,15 @@ class Pool:
         items: Iterable[T],
         fn: Callable[[T], R],
         *,
+        retry: RetryPolicy | None = None,
         error_policy: ErrorPolicy = "raise",
     ) -> list[R] | BatchResult[T, R]:
         """Apply ``fn`` to every item, returning results in input order.
+
+        With a ``retry`` policy, failures matching ``retry.retry_on`` are
+        re-executed up to ``retry.max_attempts`` total runs (with backoff)
+        before counting as definitive; retrying is only safe for idempotent
+        operations — see :class:`RetryPolicy`.
 
         With ``error_policy="raise"`` (default), the first definitive failure
         cancels not-yet-started tasks and raises :class:`TaskError` — which
@@ -169,9 +178,9 @@ class Pool:
         if scheduler is None:
             raise RuntimeError("Pool is closed")
         if error_policy == "collect":
-            return _collect(scheduler, items, fn)
+            return _collect(scheduler, items, fn, retry)
         completed_values: dict[int, R] = {}
-        completion_stream = scheduler.run(items, fn)
+        completion_stream = scheduler.run(items, fn, retry)
         try:
             for work in completion_stream:
                 completed_values[work.index] = _successful_value(work)
@@ -187,7 +196,11 @@ class Pool:
             ) from exc
 
     def imap_unordered(
-        self, items: Iterable[T], fn: Callable[[T], R]
+        self,
+        items: Iterable[T],
+        fn: Callable[[T], R],
+        *,
+        retry: RetryPolicy | None = None,
     ) -> Iterator[R]:
         """Apply ``fn`` to every item, yielding results as they complete.
 
@@ -203,10 +216,13 @@ class Pool:
         if self._scheduler is None:
             # Raise here, at call time, not lazily inside the generator.
             raise RuntimeError("Pool is closed")
-        return self._stream_unordered(items, fn)
+        return self._stream_unordered(items, fn, retry)
 
     def _stream_unordered(
-        self, items: Iterable[T], fn: Callable[[T], R]
+        self,
+        items: Iterable[T],
+        fn: Callable[[T], R],
+        retry: RetryPolicy | None,
     ) -> Iterator[R]:
         # The pool's closed state is re-checked before every resumption: a
         # same-thread close() while this generator is suspended leaves
@@ -216,7 +232,7 @@ class Pool:
         scheduler = self._scheduler
         if scheduler is None:
             raise RuntimeError("Pool is closed")
-        completion_stream = scheduler.run(items, fn)
+        completion_stream = scheduler.run(items, fn, retry)
         try:
             while True:
                 if self._scheduler is None:
@@ -250,11 +266,14 @@ class Pool:
 
 
 def _collect(
-    scheduler: BoundedScheduler, items: Iterable[T], fn: Callable[[T], R]
+    scheduler: BoundedScheduler,
+    items: Iterable[T],
+    fn: Callable[[T], R],
+    retry: RetryPolicy | None,
 ) -> BatchResult[T, R]:
     successful: list[TaskResult[T, R]] = []
     failed: list[TaskFailure[T]] = []
-    completion_stream = scheduler.run(items, fn)
+    completion_stream = scheduler.run(items, fn, retry)
     try:
         for work in completion_stream:
             if work.state is TaskState.SUCCESS:

@@ -7,7 +7,15 @@ notice.
 from tanda.exceptions import TaskError
 from tanda.pool import Pool
 from tanda.results import BatchResult, TaskFailure, TaskResult
+from tanda.retry import RetryPolicy
 
 __version__ = "0.1.0.dev0"
 
-__all__ = ["BatchResult", "Pool", "TaskError", "TaskFailure", "TaskResult"]
+__all__ = [
+    "BatchResult",
+    "Pool",
+    "RetryPolicy",
+    "TaskError",
+    "TaskFailure",
+    "TaskResult",
+]

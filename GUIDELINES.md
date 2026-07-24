@@ -131,11 +131,23 @@ Progress is an *observation* of the workload; it never controls execution.
   A predicate form (`retry_if=lambda exc: ...`) may come later; V1 ships
   `retry_on` only — one API, not two.
 - Backoff in V1 is limited to `none`, `fixed`, and `exponential` (with
-  optional jitter). tanda is not trying to become Tenacity.
+  optional jitter). tanda is not trying to become Tenacity. The frozen
+  signature:
 
   ```python
-  RetryPolicy(max_attempts=4, backoff="exponential", jitter=True)
+  RetryPolicy(
+      max_attempts=3,
+      retry_on=(Exception,),
+      backoff=0.0,               # base delay in seconds; 0 = no wait
+      backoff_strategy="fixed",  # or "exponential": backoff * 2**(N-1)
+      jitter=False,              # full jitter: uniform(0, computed delay)
+  )
   ```
+
+  Backoff waits happen in the coordinator (`wait()` with a timeout — no
+  helper threads); items waiting out a backoff count against `max_pending`,
+  and `elapsed` accumulates execution time across attempts, excluding
+  backoff waits.
 
 ### Idempotency
 
@@ -260,7 +272,8 @@ Pool(workers=None, max_pending=None)
 pool.map(items, fn, *, progress=False, retry=None, task_timeout=None)
 pool.imap_unordered(...)
 
-RetryPolicy(max_attempts=3, backoff=0, retry_on=(Exception,))
+RetryPolicy(max_attempts=3, retry_on=(Exception,), backoff=0.0,
+            backoff_strategy="fixed", jitter=False)
 ```
 
 Nothing else initially. The MVP must deliver, internally: bounded pending
