@@ -100,6 +100,10 @@ def test_yields_in_completion_order_not_input_order(executor):
     gate.set()
     second = next(gen)
     assert second.item == "slow"
+    # An assert failing inside fn becomes a FAILED item, not a test failure —
+    # check states so a silently-timed-out gate cannot fake a pass.
+    assert first.state is TaskState.SUCCESS
+    assert second.state is TaskState.SUCCESS
 
 
 # --- bounded window / laziness ---------------------------------------------
@@ -173,6 +177,8 @@ def test_input_not_consumed_beyond_window_while_workers_blocked(executor):
     assert not consumer.is_alive()
     assert len(results) == 10
     assert len(pulled) == 10
+    # Guard against fn's internal assert timing out and yielding FAILED items.
+    assert all(w.state is TaskState.SUCCESS for w in results)
 
 
 def test_infinite_input_stays_bounded_when_consumer_stops(executor):
@@ -253,6 +259,23 @@ def test_worker_exception_is_captured_not_raised(executor):
             assert work.state is TaskState.SUCCESS
             assert work.value == item
             assert work.exception is None
+
+
+class _Escape(BaseException):
+    """Deliberately not an Exception: exercises the escaped-exception path."""
+
+
+def test_base_exception_from_fn_is_recorded_as_failed(executor):
+    # _run_one only catches Exception; a BaseException reaches the future and
+    # must be transplanted onto the WorkItem by _record_escaped_exception.
+    def fn(item):
+        raise _Escape("escaped")
+
+    scheduler = BoundedScheduler(executor, max_pending=2)
+    [work] = list(scheduler.run([1], fn))
+    assert work.state is TaskState.FAILED
+    assert isinstance(work.exception, _Escape)
+    assert work.value is None
 
 
 def test_input_iterator_error_propagates(executor):

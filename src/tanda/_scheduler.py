@@ -90,7 +90,10 @@ class BoundedScheduler:
         running tasks cannot be stopped and are left to finish. If several
         tasks completed in the same wait() cycle and the generator is closed
         before all of them were yielded, the unyielded ones are dropped —
-        never yielded late, never double-counted.
+        never yielded late, never double-counted. A generator abandoned
+        without close() only runs this cleanup when it is finalized —
+        immediate under CPython refcounting, possibly delayed on other
+        implementations — so prefer exhausting it or closing it explicitly.
         """
         iterator = iter(items)
         in_flight: dict[Future[None], WorkItem[T, R]] = {}
