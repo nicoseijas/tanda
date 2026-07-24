@@ -190,6 +190,30 @@ Two levels, never conflated:
 State names reflect this: a pending task becomes `CANCELLED`; a running task
 becomes `CANCELLATION_REQUESTED`. They are not the same state.
 
+The frozen V1 API — the caller owns the token and the task function opts in
+by closing over it, no signature magic:
+
+```python
+cancel = Cancellation()
+
+def process(item):
+    for chunk in chunks(item):
+        cancel.raise_if_requested()   # cooperative checkpoint (opt-in)
+        handle(chunk)
+
+with Pool() as pool:
+    pool.map(items, process, cancel=cancel)
+# From any thread: cancel.request() -> map() raises Cancelled, pending
+# tasks are cancelled, running tasks are asked and their late results
+# dropped. Tokens are one-way; requesting is idempotent. Cancellation
+# interrupts retry backoffs, and observation latency while the coordinator
+# is blocked is bounded by a 0.5s wait slice.
+```
+
+`Cancelled` is deliberately an `Exception` (unlike
+`concurrent.futures.CancelledError`, a `BaseException`): a requested
+cancellation is an expected outcome, not a control-flow escape.
+
 ### Ctrl+C
 
 `KeyboardInterrupt` must work correctly — this looks trivial and is routinely

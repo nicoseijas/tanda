@@ -14,7 +14,8 @@ from typing import Literal, NoReturn, TypeVar, cast, overload
 
 from tanda._scheduler import BoundedScheduler, WorkItem, default_max_pending
 from tanda._states import TaskState
-from tanda.exceptions import TaskError, TaskTimeout
+from tanda.cancellation import Cancellation
+from tanda.exceptions import Cancelled, TaskError, TaskTimeout
 from tanda.results import BatchResult, TaskFailure, TaskResult
 from tanda.retry import RetryPolicy
 
@@ -42,6 +43,9 @@ def _successful_value(work: WorkItem[T, R]) -> R:
         return cast(R, work.value)
     if work.state in _FAILURE_STATES:
         assert work.exception is not None
+        if isinstance(work.exception, Cancelled):
+            # A cancellation is an outcome, not a task error — never wrapped.
+            raise work.exception
         if not isinstance(work.exception, Exception):
             # KeyboardInterrupt/SystemExit must keep their category: wrapping
             # them in TaskError (an Exception) would make `except
@@ -142,6 +146,7 @@ class Pool:
         retry: RetryPolicy | None = None,
         task_timeout: float | None = None,
         overall_timeout: float | None = None,
+        cancel: Cancellation | None = None,
         error_policy: Literal["raise"] = "raise",
     ) -> list[R]: ...
 
@@ -154,6 +159,7 @@ class Pool:
         retry: RetryPolicy | None = None,
         task_timeout: float | None = None,
         overall_timeout: float | None = None,
+        cancel: Cancellation | None = None,
         error_policy: Literal["collect"],
     ) -> BatchResult[T, R]: ...
 
@@ -165,6 +171,7 @@ class Pool:
         retry: RetryPolicy | None = None,
         task_timeout: float | None = None,
         overall_timeout: float | None = None,
+        cancel: Cancellation | None = None,
         error_policy: ErrorPolicy = "raise",
     ) -> list[R] | BatchResult[T, R]:
         """Apply ``fn`` to every item, returning results in input order.
@@ -213,10 +220,12 @@ class Pool:
         if scheduler is None:
             raise RuntimeError("Pool is closed")
         if error_policy == "collect":
-            return _collect(scheduler, items, fn, retry, task_timeout, overall_timeout)
+            return _collect(
+                scheduler, items, fn, retry, task_timeout, overall_timeout, cancel
+            )
         completed_values: dict[int, R] = {}
         completion_stream = scheduler.run(
-            items, fn, retry, task_timeout, overall_timeout
+            items, fn, retry, task_timeout, overall_timeout, cancel
         )
         try:
             for work in completion_stream:
@@ -240,6 +249,7 @@ class Pool:
         retry: RetryPolicy | None = None,
         task_timeout: float | None = None,
         overall_timeout: float | None = None,
+        cancel: Cancellation | None = None,
     ) -> Iterator[R]:
         """Apply ``fn`` to every item, yielding results as they complete.
 
@@ -256,7 +266,9 @@ class Pool:
         if self._scheduler is None:
             # Raise here, at call time, not lazily inside the generator.
             raise RuntimeError("Pool is closed")
-        return self._stream_unordered(items, fn, retry, task_timeout, overall_timeout)
+        return self._stream_unordered(
+            items, fn, retry, task_timeout, overall_timeout, cancel
+        )
 
     def _stream_unordered(
         self,
@@ -265,6 +277,7 @@ class Pool:
         retry: RetryPolicy | None,
         task_timeout: float | None,
         overall_timeout: float | None,
+        cancel: Cancellation | None,
     ) -> Iterator[R]:
         # The pool's closed state is re-checked before every resumption: a
         # same-thread close() while this generator is suspended leaves
@@ -275,7 +288,7 @@ class Pool:
         if scheduler is None:
             raise RuntimeError("Pool is closed")
         completion_stream = scheduler.run(
-            items, fn, retry, task_timeout, overall_timeout
+            items, fn, retry, task_timeout, overall_timeout, cancel
         )
         try:
             while True:
@@ -316,10 +329,13 @@ def _collect(
     retry: RetryPolicy | None,
     task_timeout: float | None,
     overall_timeout: float | None,
+    cancel: Cancellation | None,
 ) -> BatchResult[T, R]:
     successful: list[TaskResult[T, R]] = []
     failed: list[TaskFailure[T]] = []
-    completion_stream = scheduler.run(items, fn, retry, task_timeout, overall_timeout)
+    completion_stream = scheduler.run(
+        items, fn, retry, task_timeout, overall_timeout, cancel
+    )
     try:
         for work in completion_stream:
             if work.state is TaskState.SUCCESS:
@@ -334,6 +350,11 @@ def _collect(
                 )
             elif work.state in _FAILURE_STATES:
                 assert work.exception is not None
+                if isinstance(work.exception, Cancelled):
+                    # Same rule as _successful_value: a cancellation is an
+                    # outcome, not a task error — collecting it as a routine
+                    # TaskFailure would silently downgrade a stop request.
+                    raise work.exception
                 if not isinstance(work.exception, Exception):
                     # Collecting a KeyboardInterrupt/SystemExit would suppress
                     # it; category-preserving propagation wins over collect.

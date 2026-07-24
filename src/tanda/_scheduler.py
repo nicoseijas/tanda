@@ -17,6 +17,7 @@ of the item and silently discard results.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
@@ -24,13 +25,21 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import Any, Generic, TypeVar
 
 from tanda._states import TERMINAL_STATES, TaskState, check_transition
-from tanda.exceptions import OverallTimeout
+from tanda.cancellation import Cancellation
+from tanda.exceptions import Cancelled, OverallTimeout
 from tanda.retry import RetryPolicy
+
+logger = logging.getLogger("tanda")
 
 T = TypeVar("T")
 R = TypeVar("R")
 
 _DEFAULT_PENDING_FACTOR = 4
+
+# Upper bound on any single coordinator wait. Bounds the observation latency
+# for a Cancellation requested from another thread, and for Ctrl+C on
+# Windows, where a lock/event wait cannot be interrupted mid-wait.
+_MAX_WAIT_SLICE = 0.5
 
 
 def default_max_pending(workers: int) -> int:
@@ -98,7 +107,12 @@ class WorkItem(Generic[T, R]):
                 return  # coordinator finalized first; drop the late failure
             self.elapsed += elapsed
             self.exception = exc
-            if retry is not None and retry.should_retry(exc, self.attempts):
+            if (
+                self.state is TaskState.RUNNING  # never after a cancel request
+                and not isinstance(exc, Cancelled)  # cancellation never retries
+                and retry is not None
+                and retry.should_retry(exc, self.attempts)
+            ):
                 self.transition_to(TaskState.RETRY_WAIT)
             else:
                 self.transition_to(TaskState.FAILED)
@@ -144,8 +158,16 @@ class WorkItem(Generic[T, R]):
             return True
 
     def cancel(self) -> None:
+        """CAS + idempotent: only not-yet-running states become CANCELLED."""
         with self.lock:
-            self.transition_to(TaskState.CANCELLED)
+            if self.state in (TaskState.PENDING, TaskState.RETRY_WAIT):
+                self.transition_to(TaskState.CANCELLED)
+
+    def request_cancellation(self) -> None:
+        """Cooperative level: a running task is asked, never killed."""
+        with self.lock:
+            if self.state is TaskState.RUNNING:
+                self.transition_to(TaskState.CANCELLATION_REQUESTED)
 
     def retry_clone(self) -> WorkItem[T, R]:
         """A fresh item for re-running after a timeout: the original stays
@@ -196,6 +218,7 @@ class BoundedScheduler:
         retry: RetryPolicy | None = None,
         task_timeout: float | None = None,
         overall_timeout: float | None = None,
+        cancel: Cancellation | None = None,
     ) -> Iterator[WorkItem[T, R]]:
         """Execute ``fn`` over ``items``, yielding WorkItems in completion order.
 
@@ -237,6 +260,16 @@ class BoundedScheduler:
         try:
             while True:
                 now = time.monotonic()
+                if cancel is not None and cancel.requested:
+                    # Checked before the overall deadline: an explicit stop
+                    # request wins over an automatic timeout when both expire
+                    # in the same iteration.
+                    # Two honest levels: running tasks are asked (their late
+                    # outcomes are dropped with the abandoned executions);
+                    # everything not yet started is cancelled by the finally.
+                    for work in in_flight.values():
+                        work.request_cancellation()
+                    raise Cancelled("cancellation requested")
                 if overall_deadline is not None and now >= overall_deadline:
                     raise OverallTimeout(
                         f"overall_timeout of {overall_timeout}s exceeded"
@@ -272,6 +305,13 @@ class BoundedScheduler:
                 timeout = self._next_wakeup(
                     in_flight, retry_wait, overall_deadline, task_timeout
                 )
+                # The slice cap bounds how stale a Cancellation request (or a
+                # Windows Ctrl+C) can go unnoticed while blocked here.
+                timeout = (
+                    _MAX_WAIT_SLICE
+                    if timeout is None
+                    else min(timeout, _MAX_WAIT_SLICE)
+                )
                 wait_set = in_flight.keys() | abandoned
                 if wait_set:
                     done, _ = wait(
@@ -282,7 +322,6 @@ class BoundedScheduler:
                     # timeout (len(done) == len(fs) short-circuit), which
                     # would turn a pure-backoff phase into a CPU-pegging spin.
                     # Nothing can complete here, so a plain sleep is exact.
-                    assert timeout is not None  # retry_wait/overall non-empty
                     if timeout > 0:
                         time.sleep(timeout)
                     done = ()
@@ -319,9 +358,17 @@ class BoundedScheduler:
                         else:
                             yield work
         finally:
-            _cancel_pending(in_flight)
+            cancelled = _cancel_pending(in_flight)
             for work in retry_wait:
                 work.cancel()
+            cancelled += len(retry_wait)
+            if cancelled:
+                logger.info(
+                    "cancelled %d pending task(s); %d running task(s) will "
+                    "finish in the background",
+                    cancelled,
+                    len(in_flight) + len(abandoned) - _cancelled_in(in_flight),
+                )
 
     def _next_wakeup(
         self,
@@ -400,9 +447,16 @@ def _record_escaped_exception(
         work.transition_to(TaskState.FAILED)
 
 
-def _cancel_pending(in_flight: dict[Future[None], WorkItem[Any, Any]]) -> None:
+def _cancel_pending(in_flight: dict[Future[None], WorkItem[Any, Any]]) -> int:
+    cancelled = 0
     for future, work in in_flight.items():
         # cancel() only succeeds for tasks the executor has not started, so a
         # True result guarantees the item is still PENDING.
         if future.cancel():
             work.cancel()
+            cancelled += 1
+    return cancelled
+
+
+def _cancelled_in(in_flight: dict[Future[None], WorkItem[Any, Any]]) -> int:
+    return sum(1 for w in in_flight.values() if w.state is TaskState.CANCELLED)

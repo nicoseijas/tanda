@@ -124,4 +124,14 @@ window slot (the worker is genuinely busy) until the function returns, at
 which point the slot frees. If the retry policy matches `TimeoutError`, the
 item is *cloned* into `RETRY_WAIT` — the original stays with the abandoned
 execution, which can no longer touch the clone. `overall_timeout` is a
-single coordinator deadline that raises under every error policy.
+single coordinator deadline that raises under every error policy. An
+explicit cancellation request takes precedence over the overall deadline
+when both are expired at the same check.
+
+Every coordinator wait is capped at a 0.5 s slice — unconditionally, not
+only when a `Cancellation` token is in use. This bounds how long a
+cancellation request (or a Ctrl+C on Windows, where a blocked wait cannot
+be interrupted mid-call) can go unnoticed, at the cost of at most two
+wakeups per second on an otherwise idle coordinator. Each wakeup re-checks
+deadlines against real timestamps, so the cap never changes *when* things
+happen — only how promptly they are observed.

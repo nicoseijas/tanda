@@ -47,6 +47,17 @@ class TaskTimeout(TaskError):
     _VERB = "timed out"
 
 
+class Cancelled(Exception):
+    """The run was cancelled via a :class:`~tanda.Cancellation` token.
+
+    Raised by ``map()``/``imap_unordered()`` when their token is requested,
+    and by ``Cancellation.raise_if_requested()`` inside cooperative task
+    functions. Deliberately an ``Exception`` (unlike
+    ``concurrent.futures.CancelledError``): a requested cancellation is an
+    expected outcome, not a control-flow signal to bypass handlers.
+    """
+
+
 class OverallTimeout(Exception):
     """The whole ``map()``/``imap_unordered()`` call exceeded
     ``overall_timeout``. Pending tasks are cancelled; running tasks finish in
