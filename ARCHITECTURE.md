@@ -22,7 +22,7 @@ Responsibilities:
 
 | Piece | Owns |
 |---|---|
-| `Pool` | public API, defaults, context-manager lifecycle |
+| `Pool` | public API, defaults, context-manager lifecycle, shutdown and coordinator ownership |
 | `_scheduler` | bounded submission window, future lifecycle, result ordering |
 | `RetryPolicy` | attempt counting, backoff computation |
 | `Cancellation` | shared cancellation state, cooperative tokens |

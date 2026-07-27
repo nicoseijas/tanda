@@ -118,8 +118,9 @@ policies, progress reporting, and graceful shutdown. Everything in the
 examples runs today.
 
 Before a first release: an adversarial deterministic test suite, a benchmark
-suite with a published overhead budget, and packaging. `imap()` (ordered streaming) and a job-handle API are planned
-after that — see the [issues](https://github.com/nicoseijas/tanda/issues).
+suite with a published overhead budget, and packaging. `imap()` (ordered
+streaming) and a job-handle API are planned after that — see the
+[issues](https://github.com/nicoseijas/tanda/issues).
 
 The surface may still change until `0.1.0` is tagged.
 

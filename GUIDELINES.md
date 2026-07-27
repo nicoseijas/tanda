@@ -171,7 +171,7 @@ Three distinct concepts, three distinct names — never a bare `timeout`:
 |---|---|
 | `task_timeout` | maximum time per *execution* of an item — the clock starts when the worker begins it; queue time never counts |
 | `overall_timeout` | maximum time for the entire `map()` call |
-| shutdown timeout | how long `__exit__` waits for running tasks |
+| `shutdown_timeout` | how long `close()` (and so `__exit__`) waits for tasks still running when the pool shuts down |
 
 ### Be brutally honest about what a timeout means
 
@@ -333,15 +333,22 @@ vocabulary: `Pool`, `Job`, `WorkItem`, `BatchResult`, `RetryPolicy`,
 ## V1 surface
 
 ```python
-Pool(workers=None, max_pending=None)
+Pool(workers=None, max_pending=None, *, shutdown_timeout=None)
 
 pool.map(items, fn, *, progress=False, retry=None,
-         task_timeout=None, overall_timeout=None)
-pool.imap_unordered(...)
+         task_timeout=None, overall_timeout=None,
+         cancel=None, error_policy="raise")
+pool.imap_unordered(...)          # same, without error_policy
+pool.close(timeout=...)           # secondary; the with block is the path
 
 RetryPolicy(max_attempts=3, retry_on=(Exception,), backoff=0.0,
             backoff_strategy="fixed", jitter=False)
+Cancellation()                    # request() / requested / wait()
 ```
+
+Results: a plain `list` under `error_policy="raise"`, a `BatchResult` under
+`"collect"`. Errors: `TaskError`, `TaskTimeout`, `Cancelled`,
+`OverallTimeout`, `ShutdownTimeout`.
 
 Nothing else initially. The MVP must deliver, internally: bounded pending
 futures, ordered results, progress, retries, cooperative cancellation, honest
