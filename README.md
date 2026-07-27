@@ -107,9 +107,17 @@ the task state machine — are written down before the code:
 
 ## Status
 
-Design stage. The API shown above is the V1 target described in
-[GUIDELINES.md](GUIDELINES.md); implementation has not started. Expect the
-surface to change until a first release is tagged.
+Pre-release, not on PyPI. The batch lifecycle described above is implemented
+and tested: bounded submission, `map()` and `imap_unordered()`, retries,
+`task_timeout` and `overall_timeout`, cooperative cancellation, error
+policies, and progress reporting. Everything in the examples runs today.
+
+Before a first release: graceful shutdown semantics, an adversarial
+deterministic test suite, a benchmark suite with a published overhead budget,
+and packaging. `imap()` (ordered streaming) and a job-handle API are planned
+after that — see the [issues](https://github.com/nicoseijas/tanda/issues).
+
+The surface may still change until `0.1.0` is tagged.
 
 ## License
 
