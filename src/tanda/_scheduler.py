@@ -199,7 +199,12 @@ class BoundedScheduler:
     and drive shutdown from the coordinator thread only.
     """
 
-    def __init__(self, executor: ThreadPoolExecutor, max_pending: int) -> None:
+    def __init__(
+        self,
+        executor: ThreadPoolExecutor,
+        max_pending: int,
+        on_leak: Callable[[set[Future[None]]], None] | None = None,
+    ) -> None:
         if not isinstance(executor, ThreadPoolExecutor):
             raise TypeError(
                 "BoundedScheduler requires a ThreadPoolExecutor (results are "
@@ -210,6 +215,11 @@ class BoundedScheduler:
             raise ValueError(f"max_pending must be >= 1, got {max_pending}")
         self._executor = executor
         self._max_pending = max_pending
+        # Called once per run() teardown with the futures whose workers are
+        # still inside fn — the only executions a bounded shutdown can wait
+        # on. Cancelled futures are excluded on purpose: they are drained
+        # from the queue and never reported done by wait().
+        self._on_leak = on_leak
 
     def run(
         self,
@@ -362,6 +372,13 @@ class BoundedScheduler:
             for work in retry_wait:
                 work.cancel()
             cancelled += len(retry_wait)
+            if self._on_leak is not None:
+                # After _cancel_pending, an uncancelled future is one a worker
+                # already picked up: genuinely running, plus the abandoned
+                # (timed-out) executions.
+                self._on_leak(
+                    {f for f in in_flight if not f.cancelled()} | abandoned
+                )
             if cancelled:
                 logger.info(
                     "cancelled %d pending task(s); %d running task(s) will "

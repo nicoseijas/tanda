@@ -128,6 +128,30 @@ single coordinator deadline that raises under every error policy. An
 explicit cancellation request takes precedence over the overall deadline
 when both are expired at the same check.
 
+## Shutdown
+
+`ThreadPoolExecutor.shutdown(wait=True)` takes no timeout, so a bounded
+`close()` is assembled from two steps: `shutdown(wait=False,
+cancel_futures=True)` drains the queue immediately, then the coordinator
+waits on the *leaked* futures itself.
+
+Leaked futures are the only ones worth waiting on: after a run ends, the
+scheduler's teardown hands `Pool` the futures whose workers are still inside
+`fn` — abandoned (timed-out) executions, plus anything left running by a
+cancelled or failed batch. Cancelled futures are deliberately excluded. A
+future the queue drain removed sits in plain `CANCELLED`, never
+`CANCELLED_AND_NOTIFIED`, and `concurrent.futures.wait()` never reports those
+as done — waiting on one is the hang described under the scheduler.
+
+Ownership is enforced in `Pool`, not the scheduler: a small lock guards the
+identity of the thread currently running a batch. Only that thread may call
+`close()`, which is what makes `shutdown(cancel_futures=True)` safe — no
+`run()` loop can be waiting on the futures being drained. The claim is taken
+on `map()` entry, and on the *first resumption* of an `imap_unordered()`
+stream (never at call time — a stream that is created and never iterated
+must not leave the pool looking busy). It spans the stream's suspensions, so
+another thread cannot slip a batch in between two yields.
+
 Every coordinator wait is capped at a 0.5 s slice — unconditionally, not
 only when a `Cancellation` token is in use. This bounds how long a
 cancellation request (or a Ctrl+C on Windows, where a blocked wait cannot

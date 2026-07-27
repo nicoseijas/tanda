@@ -63,3 +63,23 @@ class OverallTimeout(Exception):
     ``overall_timeout``. Pending tasks are cancelled; running tasks finish in
     the background. Raised under every error policy — a partial batch is
     never silently returned."""
+
+
+class ShutdownTimeout(Exception):
+    """``close()`` gave up waiting for workers still inside ``fn``.
+
+    The pool is shut down regardless — no queued work will start — but the
+    threads that were already executing cannot be killed and keep running.
+    ``running`` counts them. Because pool threads are not daemons, they also
+    keep the interpreter alive at exit: this exception reports a leak it
+    cannot fix, which is the point of raising it instead of returning
+    quietly.
+    """
+
+    def __init__(self, running: int, timeout: float) -> None:
+        self.running = running
+        self.timeout = timeout
+        super().__init__(
+            f"{running} task(s) still running after waiting {timeout}s for "
+            "shutdown; they cannot be killed and will keep running"
+        )

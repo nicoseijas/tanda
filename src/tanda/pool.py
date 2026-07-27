@@ -9,15 +9,17 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from collections.abc import Callable, Iterable, Iterator
-from concurrent.futures import ThreadPoolExecutor
-from typing import Literal, NoReturn, TypeVar, cast, overload
+from concurrent.futures import Future, ThreadPoolExecutor, wait
+from contextlib import contextmanager
+from typing import Final, Literal, NoReturn, TypeVar, cast, overload
 
 from tanda._scheduler import BoundedScheduler, WorkItem, default_max_pending
 from tanda._states import TaskState
 from tanda.cancellation import Cancellation
 from tanda.progress import DefaultProgress, ProgressReporter
-from tanda.exceptions import Cancelled, TaskError, TaskTimeout
+from tanda.exceptions import Cancelled, ShutdownTimeout, TaskError, TaskTimeout
 from tanda.results import BatchResult, TaskFailure, TaskResult
 from tanda.retry import RetryPolicy
 
@@ -28,6 +30,14 @@ logger = logging.getLogger("tanda")
 
 ErrorPolicy = Literal["raise", "collect"]
 _ERROR_POLICIES = ("raise", "collect")
+
+
+class _Unset:
+    """Distinguishes ``close()`` with no timeout argument from an explicit
+    ``timeout=None`` (wait forever), which must override a pool default."""
+
+
+_UNSET: Final = _Unset()
 
 
 def _report(reporter_call: Callable[..., None], *args: object) -> None:
@@ -69,6 +79,15 @@ def _validate_timeouts(
         raise ValueError(f"task_timeout must be > 0, got {task_timeout}")
     if overall_timeout is not None and overall_timeout <= 0:
         raise ValueError(f"overall_timeout must be > 0, got {overall_timeout}")
+
+
+def _validate_shutdown_timeout(shutdown_timeout: float | None) -> None:
+    # 0 is meaningful here (unlike the task timeouts): "cancel what is queued
+    # and give up on the rest immediately".
+    if shutdown_timeout is not None and shutdown_timeout < 0:
+        raise ValueError(
+            f"shutdown_timeout must be >= 0, got {shutdown_timeout}"
+        )
 
 
 def _successful_value(work: WorkItem[T, R]) -> R:
@@ -123,44 +142,60 @@ class Pool:
     (default ``workers x 4``), so arbitrarily large or infinite iterables run
     in constant memory.
 
-    A Pool belongs to one coordinator thread. Not reentrant: a task function
-    must not call back into the same pool — with all workers busy, the inner
-    call would wait for slots that can only be freed by the very tasks doing
-    the waiting. Not thread-safe either: calling ``close()`` (or exiting the
-    ``with`` block) while another thread is inside ``map()`` or consuming an
-    ``imap_unordered()`` stream can hang that thread permanently (see
-    BoundedScheduler), and concurrent ``map()``/``imap_unordered()`` calls
-    would each get their own ``max_pending`` window, breaking the pool-wide
-    bound. Drive everything from the owning thread.
+    A Pool belongs to one coordinator thread, and that contract is enforced
+    rather than merely documented: a second thread entering ``map()`` or
+    ``imap_unordered()``, or calling ``close()`` while a batch runs, raises
+    ``RuntimeError``. This covers reentrancy too — a task function calling
+    back into its own pool runs on a worker thread, so it fails loudly
+    instead of waiting for slots that only its own caller can free. Without
+    the check, concurrent runs would each get their own ``max_pending``
+    window (breaking the pool-wide bound) and a cross-thread ``close()``
+    could hang the coordinator forever (see BoundedScheduler).
 
     On KeyboardInterrupt inside ``map()``, pending tasks are cancelled
     immediately; the executor itself is shut down by ``__exit__``/``close()``
     — one more reason the ``with`` block is the primary path.
 
     ``close()`` waits for running tasks — including executions already
-    declared timed out, which cannot be killed. A task stuck forever will
-    hang ``close()`` forever, even though ``map()`` itself returned at the
-    deadline.
+    declared timed out, which cannot be killed. By default it waits
+    indefinitely, so a task stuck forever hangs ``close()`` forever even
+    though ``map()`` returned at its deadline; ``shutdown_timeout`` bounds
+    that wait and raises :class:`ShutdownTimeout` instead.
     """
 
     def __init__(
-        self, workers: int | None = None, max_pending: int | None = None
+        self,
+        workers: int | None = None,
+        max_pending: int | None = None,
+        *,
+        shutdown_timeout: float | None = None,
     ) -> None:
         if workers is not None and workers < 1:
             raise ValueError(f"workers must be >= 1, got {workers}")
         if max_pending is not None and max_pending < 1:
             raise ValueError(f"max_pending must be >= 1, got {max_pending}")
+        _validate_shutdown_timeout(shutdown_timeout)
         self._workers = workers if workers is not None else _default_workers()
         self._max_pending = (
             max_pending
             if max_pending is not None
             else default_max_pending(self._workers)
         )
+        self._shutdown_timeout = shutdown_timeout
+        # Futures whose workers are still inside fn after a run ended:
+        # abandoned (timed-out) executions, plus tasks left running by a
+        # cancelled or failed batch. The only things close() can wait on.
+        self._leaked: set[Future[None]] = set()
+        # Guards the ownership bookkeeping only — never held across user code
+        # or across a wait.
+        self._lock = threading.Lock()
+        self._run_owner: int | None = None  # thread ident of the coordinator
+        self._run_depth = 0
         self._executor: ThreadPoolExecutor | None = ThreadPoolExecutor(
             max_workers=self._workers, thread_name_prefix="tanda"
         )
         self._scheduler: BoundedScheduler | None = BoundedScheduler(
-            self._executor, self._max_pending
+            self._executor, self._max_pending, on_leak=self._record_leaks
         )
 
     @property
@@ -170,6 +205,50 @@ class Pool:
     @property
     def max_pending(self) -> int:
         return self._max_pending
+
+    @property
+    def shutdown_timeout(self) -> float | None:
+        return self._shutdown_timeout
+
+    def _record_leaks(self, futures: set[Future[None]]) -> None:
+        # Called from the scheduler's teardown. Drop settled futures from
+        # earlier runs so the set stays O(in-flight), not O(runs).
+        with self._lock:
+            self._leaked = {f for f in self._leaked if not f.done()} | futures
+
+    @contextmanager
+    def _active_run(self) -> Iterator[None]:
+        """Marks a batch as running on this thread, enforcing the
+        single-coordinator contract loudly instead of hanging.
+
+        Same-thread nesting is allowed (it is bounded by the same window and
+        cannot deadlock); a second thread entering — including a task function
+        calling back into its own pool, which always runs on a worker thread —
+        is a bug that would otherwise corrupt the pool-wide ``max_pending``
+        bound or deadlock, so it raises.
+        """
+        ident = threading.get_ident()
+        with self._lock:
+            if self._run_owner is not None and self._run_owner != ident:
+                raise RuntimeError(
+                    "Pool is already running a batch on another thread "
+                    f"({self._run_owner}); a Pool belongs to one coordinator "
+                    "thread and task functions must not call back into it. "
+                    "Use a separate Pool per thread."
+                )
+            self._run_owner = ident
+            self._run_depth += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                # A generator abandoned without close() runs this from
+                # whatever thread finalizes it; leaving another coordinator's
+                # claim alone is the safe direction to err in.
+                if self._run_owner == ident:
+                    self._run_depth -= 1
+                    if self._run_depth == 0:
+                        self._run_owner = None
 
     @overload
     def map(
@@ -257,33 +336,34 @@ class Pool:
         scheduler = self._scheduler
         if scheduler is None:
             raise RuntimeError("Pool is closed")
-        if error_policy == "collect":
-            return _collect(
-                scheduler,
-                items,
-                fn,
-                retry,
-                task_timeout,
-                overall_timeout,
-                cancel,
-                reporter,
-            )
-        if reporter is not None:
-            _report(reporter.start, _total_of(items))
-        completed_values: dict[int, R] = {}
-        completion_stream = scheduler.run(
-            items, fn, retry, task_timeout, overall_timeout, cancel
-        )
-        try:
-            for work in completion_stream:
-                if reporter is not None:
-                    _report(reporter.advance)
-                completed_values[work.index] = _successful_value(work)
-        finally:
-            # Deterministic cleanup: cancel pending tasks now, not at GC.
-            completion_stream.close()
+        with self._active_run():
+            if error_policy == "collect":
+                return _collect(
+                    scheduler,
+                    items,
+                    fn,
+                    retry,
+                    task_timeout,
+                    overall_timeout,
+                    cancel,
+                    reporter,
+                )
             if reporter is not None:
-                _report(reporter.finish)
+                _report(reporter.start, _total_of(items))
+            completed_values: dict[int, R] = {}
+            completion_stream = scheduler.run(
+                items, fn, retry, task_timeout, overall_timeout, cancel
+            )
+            try:
+                for work in completion_stream:
+                    if reporter is not None:
+                        _report(reporter.advance)
+                    completed_values[work.index] = _successful_value(work)
+            finally:
+                # Deterministic cleanup: cancel pending tasks now, not at GC.
+                completion_stream.close()
+                if reporter is not None:
+                    _report(reporter.finish)
         try:
             return [completed_values[i] for i in range(len(completed_values))]
         except KeyError as exc:
@@ -348,43 +428,99 @@ class Pool:
         scheduler = self._scheduler
         if scheduler is None:
             raise RuntimeError("Pool is closed")
-        completion_stream = scheduler.run(
-            items, fn, retry, task_timeout, overall_timeout, cancel
-        )
-        try:
-            while True:
-                if self._scheduler is None:
-                    raise RuntimeError("Pool was closed while streaming")
-                try:
-                    work = next(completion_stream)
-                except StopIteration:
-                    return
+        # Claimed on first resumption, not at imap_unordered() call time: a
+        # stream that is created and never iterated must not leave the pool
+        # looking permanently busy. The claim then spans the suspensions too,
+        # so a *different* thread cannot start a batch mid-stream.
+        with self._active_run():
+            completion_stream = scheduler.run(
+                items, fn, retry, task_timeout, overall_timeout, cancel
+            )
+            try:
+                while True:
+                    if self._scheduler is None:
+                        raise RuntimeError("Pool was closed while streaming")
+                    try:
+                        work = next(completion_stream)
+                    except StopIteration:
+                        return
+                    if reporter is not None:
+                        _report(reporter.advance)
+                    yield _successful_value(work)
+            finally:
+                # Runs on close(), exhaustion, or an in-flight failure: cancel
+                # not-yet-started tasks deterministically.
+                completion_stream.close()
                 if reporter is not None:
-                    _report(reporter.advance)
-                yield _successful_value(work)
-        finally:
-            # Runs on close(), exhaustion, or an in-flight failure: cancel
-            # not-yet-started tasks deterministically.
-            completion_stream.close()
-            if reporter is not None:
-                _report(reporter.finish)
+                    _report(reporter.finish)
 
-    def close(self) -> None:
-        """Shut down the pool, waiting for running tasks. Idempotent."""
+    def close(self, *, timeout: float | None | _Unset = _UNSET) -> None:
+        """Shut down the pool. Idempotent.
+
+        Queued work is cancelled and no further batch can start. Tasks already
+        inside ``fn`` cannot be killed, so the only choice is how long to wait
+        for them: ``timeout=None`` waits indefinitely (the default, and what
+        the stdlib does), a number waits at most that many seconds and then
+        raises :class:`ShutdownTimeout`, and ``0`` gives up immediately.
+        Omitting the argument uses the pool's ``shutdown_timeout``.
+
+        Giving up does not stop anything — the abandoned workers keep running
+        and, because pool threads are not daemons, keep the interpreter alive
+        at exit. A bounded shutdown buys a diagnosable error instead of a
+        silent hang, not the ability to kill a thread.
+
+        Must be called from the coordinator thread. Calling it while another
+        thread is inside ``map()`` or an ``imap_unordered()`` stream raises
+        rather than hanging that thread on futures that can never report done.
+        """
+        resolved = (
+            self._shutdown_timeout if isinstance(timeout, _Unset) else timeout
+        )
+        _validate_shutdown_timeout(resolved)
+        with self._lock:
+            owner = self._run_owner
+            if owner is not None and owner != threading.get_ident():
+                raise RuntimeError(
+                    "close() called while a batch is running on thread "
+                    f"{owner}; shutting the executor down under a "
+                    "running coordinator would hang it. Close the pool from "
+                    "the thread that owns it."
+                )
         if self._executor is None:
             return
-        # Safe against the wait()-hang documented on BoundedScheduler ONLY
-        # because of the single-coordinator contract in the class docstring:
-        # called from the owning thread, no run() loop can be waiting.
-        self._executor.shutdown(wait=True, cancel_futures=True)
-        self._executor = None
+        executor, self._executor = self._executor, None
         self._scheduler = None
+        if resolved is None:
+            # Safe against the wait()-hang documented on BoundedScheduler ONLY
+            # because of the single-coordinator contract enforced above: no
+            # run() loop can be waiting on the futures this drains.
+            executor.shutdown(wait=True, cancel_futures=True)
+            return
+        # Drain the queue without joining, then bound the wait ourselves —
+        # shutdown(wait=True) has no timeout. Only leaked futures are waited
+        # on: cancelled ones are drained and never reported done by wait().
+        executor.shutdown(wait=False, cancel_futures=True)
+        with self._lock:
+            leaked = {f for f in self._leaked if not f.done()}
+            self._leaked = set()
+        if not leaked:
+            return
+        _, still_running = wait(leaked, timeout=resolved)
+        if still_running:
+            raise ShutdownTimeout(len(still_running), resolved)
 
     def __enter__(self) -> Pool:
         return self
 
-    def __exit__(self, *exc_info: object) -> None:
-        self.close()
+    def __exit__(self, exc_type: type[BaseException] | None, *_: object) -> None:
+        try:
+            self.close()
+        except ShutdownTimeout:
+            if exc_type is None:
+                raise
+            # Never let a shutdown complaint replace the error that actually
+            # ended the block — that one is what the caller needs to see.
+            logger.warning("shutdown timed out while unwinding", exc_info=True)
 
 
 def _collect(

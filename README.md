@@ -67,6 +67,10 @@ with Pool(workers=16) as pool:
 - **Cancellation and Ctrl+C.** Pending tasks are cancelled, running tasks are
   asked to stop, the executor shuts down, and `KeyboardInterrupt` is
   re-raised — no hung process, no wall of stack traces.
+- **A shutdown you can bound.** Leaving the `with` block cancels queued work
+  and waits for what is still running. `Pool(shutdown_timeout=30)` caps that
+  wait and raises `ShutdownTimeout` naming the stuck workers, instead of
+  hanging on a task that never returns.
 - **Errors that fail loudly.** By default the first definitive failure raises
   a `TaskError` carrying the item, its index, the underlying exception, the
   attempt count, and elapsed time. `error_policy="collect"` instead returns a
@@ -110,11 +114,11 @@ the task state machine — are written down before the code:
 Pre-release, not on PyPI. The batch lifecycle described above is implemented
 and tested: bounded submission, `map()` and `imap_unordered()`, retries,
 `task_timeout` and `overall_timeout`, cooperative cancellation, error
-policies, and progress reporting. Everything in the examples runs today.
+policies, progress reporting, and graceful shutdown. Everything in the
+examples runs today.
 
-Before a first release: graceful shutdown semantics, an adversarial
-deterministic test suite, a benchmark suite with a published overhead budget,
-and packaging. `imap()` (ordered streaming) and a job-handle API are planned
+Before a first release: an adversarial deterministic test suite, a benchmark
+suite with a published overhead budget, and packaging. `imap()` (ordered streaming) and a job-handle API are planned
 after that — see the [issues](https://github.com/nicoseijas/tanda/issues).
 
 The surface may still change until `0.1.0` is tagged.

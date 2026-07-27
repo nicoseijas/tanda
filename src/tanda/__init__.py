@@ -5,7 +5,13 @@ notice.
 """
 
 from tanda.cancellation import Cancellation
-from tanda.exceptions import Cancelled, OverallTimeout, TaskError, TaskTimeout
+from tanda.exceptions import (
+    Cancelled,
+    OverallTimeout,
+    ShutdownTimeout,
+    TaskError,
+    TaskTimeout,
+)
 from tanda.pool import Pool
 from tanda.progress import (
     CallbackProgress,
@@ -29,6 +35,7 @@ __all__ = [
     "OverallTimeout",
     "Pool",
     "RetryPolicy",
+    "ShutdownTimeout",
     "TaskError",
     "TaskFailure",
     "TaskResult",

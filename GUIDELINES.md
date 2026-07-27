@@ -273,6 +273,41 @@ On exit: stop accepting submissions, cancel according to policy, wait
 according to policy, release resources. An explicit `pool.close()` is
 supported but secondary.
 
+`shutdown_timeout` is the third timeout, and it is not a task timeout: it
+bounds how long `close()` waits for workers still inside `fn` — including
+executions already declared timed out, which keep running because Python
+cannot kill a thread.
+
+```python
+with Pool(shutdown_timeout=30) as pool:   # or pool.close(timeout=30)
+    ...
+```
+
+Default `None`: wait indefinitely, like `ThreadPoolExecutor.shutdown()`. A
+finite default would be false comfort — giving up does not stop anything, and
+pool threads are not daemons, so an abandoned worker still holds the process
+open at exit. What a bounded shutdown buys is a `ShutdownTimeout` naming the
+leak instead of a silent hang. `timeout=0` gives up immediately; an explicit
+`timeout=None` overrides a finite pool default.
+
+Exiting the `with` block never lets a shutdown complaint replace the
+exception that ended the block: if the body raised, a `ShutdownTimeout` is
+logged as a warning instead of propagating.
+
+### One coordinator per pool
+
+A pool belongs to the thread that drives it, and the rule is enforced, not
+just documented. A second thread entering `map()`/`imap_unordered()`, or
+calling `close()` while a batch runs, raises `RuntimeError`. So does a task
+function calling back into its own pool — it runs on a worker thread, so the
+same check catches it.
+
+The alternative is worse than an error: concurrent runs would each get their
+own `max_pending` window (the pool-wide bound would silently stop holding),
+and a cross-thread `close()` can leave the coordinator waiting on futures the
+shutdown drained, which `concurrent.futures.wait()` never reports as done —
+a permanent hang. Same-thread nesting stays legal; it cannot deadlock.
+
 ## No unnecessary threads
 
 No dedicated threads for progress, retries, scheduling, or timeouts if they
