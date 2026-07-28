@@ -91,8 +91,6 @@ with Pool(workers=16) as pool:
 
 ## Installation
 
-Not published to PyPI yet — see [Status](#status).
-
 ```bash
 pip install tanda           # no dependencies
 pip install "tanda[tqdm]"   # adds TqdmProgress
@@ -128,22 +126,19 @@ Full numbers, methodology, and the frozen overhead budget:
 
 ## Status
 
-Pre-release, not on PyPI. The batch lifecycle described above is implemented
-and tested: bounded submission, `map()` and `imap_unordered()`, retries,
-`task_timeout` and `overall_timeout`, cooperative cancellation, error
-policies, progress reporting, and graceful shutdown. Everything in the
-examples runs today.
+`0.1.0`, the first release. The batch lifecycle described above is
+implemented and tested: bounded submission, `map()` and `imap_unordered()`,
+retries, `task_timeout` and `overall_timeout`, cooperative cancellation,
+error policies, progress reporting, and graceful shutdown. The suite is
+adversarial rather than happy-path — 10k-item batches, the
+timeout-versus-completion and error-versus-cancellation races, backpressure,
+reentrancy — and runs on 3.10–3.13 across Linux and Windows. Measured
+overhead and the frozen budget are in [BENCHMARKS.md](BENCHMARKS.md).
 
-The three things that were pending before a first release are done: the
-adversarial test suite (10k-item batches, the timeout/completion and
-error/cancellation races, reentrancy), the benchmark suite with a frozen
-overhead budget, and packaging — a typed distribution that builds clean and
-is tested on 3.10–3.13 across Linux and Windows. What remains is tagging
-`0.1.0` and publishing it. `imap()` (ordered streaming) and a job-handle API
-come after that — see the
-[issues](https://github.com/nicoseijas/tanda/issues).
-
-The surface may still change until `0.1.0` is tagged.
+It is `0.x`: the documented surface is what tanda commits to, and a change
+to it comes with a minor bump and a [CHANGELOG](CHANGELOG.md) entry, not a
+silent redefinition. `imap()` (ordered streaming) and a job-handle API are
+next — see the [issues](https://github.com/nicoseijas/tanda/issues).
 
 ## License
 

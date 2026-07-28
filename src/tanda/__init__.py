@@ -26,7 +26,7 @@ from tanda.retry import RetryPolicy
 # constructor, so importing tanda never requires the optional dependency.
 from tanda.tqdm_progress import TqdmProgress
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.1.0"
 
 __all__ = [
     "BatchResult",

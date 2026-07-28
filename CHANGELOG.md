@@ -4,9 +4,9 @@ Notable changes, newest first. Versions follow
 [semantic versioning](https://semver.org); anything under `0.x` may still
 change its surface, and this file says so when it does.
 
-## Unreleased
+## 0.1.0 — 2026-07-28
 
-Everything so far — the package has not been released yet.
+First release. Everything below is what it ships with.
 
 ### Added
 
