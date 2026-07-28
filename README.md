@@ -106,8 +106,21 @@ the task state machine — are written down before the code:
 - [ARCHITECTURE.md](ARCHITECTURE.md) — module layout, task state machine,
   threading model
 - [CONTRIBUTING.md](CONTRIBUTING.md) — testing and benchmark requirements
+- [BENCHMARKS.md](BENCHMARKS.md) — measured overhead and the frozen budget
 - [examples/](examples/) — runnable scripts (progress bars, retries,
   callbacks)
+
+## Performance
+
+On I/O-bound work — what tanda is for — the coordination overhead disappears
+into the waiting: 1000 tasks of 5–20 ms land within 1% of raw
+`ThreadPoolExecutor.map`. On 50,000 no-op tasks, where there is nothing to
+wait for, tanda is 43% slower; that is the price of the lifecycle, and it is
+published rather than hidden. Over a 1M-item input, submit-all peaks at
+1.7 GB of futures against tanda's 0.2 MB.
+
+Full numbers, methodology, and the frozen overhead budget:
+[BENCHMARKS.md](BENCHMARKS.md).
 
 ## Status
 
@@ -117,10 +130,11 @@ and tested: bounded submission, `map()` and `imap_unordered()`, retries,
 policies, progress reporting, and graceful shutdown. Everything in the
 examples runs today.
 
-Before a first release: an adversarial deterministic test suite, a benchmark
-suite with a published overhead budget, and packaging. `imap()` (ordered
-streaming) and a job-handle API are planned after that — see the
-[issues](https://github.com/nicoseijas/tanda/issues).
+The adversarial test suite (10k-item batches, the timeout/completion and
+error/cancellation races, reentrancy) and the benchmark suite with a frozen
+overhead budget are in place. Packaging is what remains before a first
+release. `imap()` (ordered streaming) and a job-handle API are planned after
+that — see the [issues](https://github.com/nicoseijas/tanda/issues).
 
 The surface may still change until `0.1.0` is tagged.
 

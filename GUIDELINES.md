@@ -373,7 +373,17 @@ turns tanda into a bad Celery instead of a good execution layer.
 ## Performance budget
 
 Without progress/retry/timeout enabled, the wrapper should add no more than a
-fixed overhead percentage versus raw `ThreadPoolExecutor` on sufficiently
-large workloads. The percentage is not chosen in advance: measure first, then
-freeze the target. Benchmark methodology and honesty rules are in
-[CONTRIBUTING.md](CONTRIBUTING.md).
+fixed overhead percentage versus raw `ThreadPoolExecutor`. The percentage was
+not chosen in advance — it was measured first and then frozen:
+
+| Scenario | Budget |
+|---|---|
+| No-op `map()` | ≤ +60% |
+| No-op `imap_unordered()` | ≤ +100% |
+| I/O-bound workload | ≤ +5% |
+
+The measured numbers behind those figures, losses included, are in
+[BENCHMARKS.md](BENCHMARKS.md); methodology and honesty rules are in
+[CONTRIBUTING.md](CONTRIBUTING.md). Exceeding a budget is a bug, not a new
+baseline: a change that trades overhead for correctness updates the table in
+the same pull request, with the reason.

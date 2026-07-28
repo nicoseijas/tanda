@@ -80,6 +80,13 @@ def worker():
 
 ## Benchmarks
 
+The suite lives in [benchmarks/](benchmarks/) and the published results in
+[BENCHMARKS.md](BENCHMARKS.md):
+
+```bash
+PYTHONPATH=src python benchmarks/run_all.py
+```
+
 Benchmark real scenarios, not just overhead:
 
 1. **Executor overhead** — raw `ThreadPoolExecutor` vs. tanda on no-op tasks.
