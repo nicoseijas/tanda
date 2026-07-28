@@ -78,7 +78,9 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM"]
 
 [tool.ruff.lint.per-file-ignores]
 # Tests deliberately construct odd shapes (lambdas as tasks, bare stubs).
-"tests/*" = ["B008", "B023", "E731", "SIM117"]
+# SIM300 included: an assertion reads best as "the constant under test
+# == the expected literal", whatever ruff calls a Yoda condition.
+"tests/*" = ["B008", "B023", "E731", "SIM117", "SIM300"]
 # The scenarios import their sibling harness by plain name, which is how a
 # script directory works and not a package layout ruff should second-guess.
 "benchmarks/*" = ["E402", "I001"]
