@@ -115,7 +115,9 @@ Progress is an *observation* of the workload; it never controls execution.
   ```
 
   with `DefaultProgress`, `NullProgress`, and `CallbackProgress`
-  implementations, and optional integration via `pip install tanda[tqdm]`.
+  implementations. `TqdmProgress` forwards to a tqdm bar and lives behind
+  `pip install tanda[tqdm]`: it imports tqdm when constructed, never at
+  `import tanda`, so the core stays dependency-free.
 - The parameter is `progress: bool | ProgressReporter` — `True` means
   `DefaultProgress()` (live `\r` bar on a TTY; only the final summary line
   on redirected streams, so CI logs stay clean; ASCII fallback when the

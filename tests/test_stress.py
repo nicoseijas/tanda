@@ -237,7 +237,7 @@ def test_exception_racing_cancellation_yields_exactly_one_outcome():
             consumer.join(WAIT)
         assert not consumer.is_alive()
 
-    assert isinstance(outcome["error"], (TaskError, Cancelled))
+    assert isinstance(outcome["error"], TaskError | Cancelled)
 
 
 @pytest.mark.parametrize("attempt", range(25))

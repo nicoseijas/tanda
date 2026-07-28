@@ -29,7 +29,9 @@ def test_explicit_max_pending_wins():
         assert pool.max_pending == 7
 
 
-@pytest.mark.parametrize("kwargs", [{"workers": 0}, {"max_pending": 0}, {"workers": -2}])
+@pytest.mark.parametrize(
+    "kwargs", [{"workers": 0}, {"max_pending": 0}, {"workers": -2}]
+)
 def test_invalid_configuration_raises(kwargs):
     with pytest.raises(ValueError):
         Pool(**kwargs)

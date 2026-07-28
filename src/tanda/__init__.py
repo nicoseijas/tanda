@@ -22,6 +22,10 @@ from tanda.progress import (
 from tanda.results import BatchResult, TaskFailure, TaskResult
 from tanda.retry import RetryPolicy
 
+# Safe to import unconditionally: the tqdm import lives inside the class's
+# constructor, so importing tanda never requires the optional dependency.
+from tanda.tqdm_progress import TqdmProgress
+
 __version__ = "0.1.0.dev0"
 
 __all__ = [
@@ -40,4 +44,5 @@ __all__ = [
     "TaskFailure",
     "TaskResult",
     "TaskTimeout",
+    "TqdmProgress",
 ]

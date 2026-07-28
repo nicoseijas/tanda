@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import Any, Generic, TypeVar
 
@@ -229,7 +229,7 @@ class BoundedScheduler:
         task_timeout: float | None = None,
         overall_timeout: float | None = None,
         cancel: Cancellation | None = None,
-    ) -> Iterator[WorkItem[T, R]]:
+    ) -> Generator[WorkItem[T, R], None, None]:
         """Execute ``fn`` over ``items``, yielding WorkItems in completion order.
 
         Worker exceptions are captured on the WorkItem (state FAILED), never
@@ -323,6 +323,7 @@ class BoundedScheduler:
                     else min(timeout, _MAX_WAIT_SLICE)
                 )
                 wait_set = in_flight.keys() | abandoned
+                done: set[Future[None]] = set()
                 if wait_set:
                     done, _ = wait(
                         wait_set, return_when=FIRST_COMPLETED, timeout=timeout
@@ -334,7 +335,6 @@ class BoundedScheduler:
                     # Nothing can complete here, so a plain sleep is exact.
                     if timeout > 0:
                         time.sleep(timeout)
-                    done = ()
 
                 for future in done:
                     if future in abandoned:

@@ -4,16 +4,93 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tanda"
-version = "0.1.0.dev0"
+dynamic = ["version"]
 description = "A small execution layer over ThreadPoolExecutor: bounded memory, progress, retries, timeouts, cancellation."
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 authors = [{ name = "Nico Seijas" }]
+keywords = [
+    "threadpool",
+    "concurrency",
+    "batch",
+    "retry",
+    "progress",
+    "cancellation",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: System :: Distributed Computing",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.optional-dependencies]
+tqdm = ["tqdm>=4.60"]
+dev = ["pytest>=8", "mypy>=1.11", "ruff>=0.6", "tqdm>=4.60"]
+
+[project.urls]
+Homepage = "https://github.com/nicoseijas/tanda"
+Source = "https://github.com/nicoseijas/tanda"
+Issues = "https://github.com/nicoseijas/tanda/issues"
+Changelog = "https://github.com/nicoseijas/tanda/blob/main/CHANGELOG.md"
+
+# One source of truth for the version: bumping __init__ bumps the package.
+[tool.hatch.version]
+path = "src/tanda/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tanda"]
 
+[tool.hatch.build.targets.sdist]
+# Everything needed to verify the package from source: the code, the suite
+# that proves the semantics, and the benchmarks behind the published budget.
+include = [
+    "src/tanda",
+    "tests",
+    "benchmarks",
+    "examples",
+    "*.md",
+    "LICENSE",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.ruff]
+# Prose and code are wrapped at 79 by hand; 88 is the enforced ceiling so
+# an occasional long expression is not worth a contorted line break.
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests deliberately construct odd shapes (lambdas as tasks, bare stubs).
+"tests/*" = ["B008", "B023", "E731", "SIM117"]
+# The scenarios import their sibling harness by plain name, which is how a
+# script directory works and not a package layout ruff should second-guess.
+"benchmarks/*" = ["E402", "I001"]
+
+[[tool.mypy.overrides]]
+# tqdm is optional and ships no stubs; the adapter is a handful of forwarded
+# calls, and requiring types-tqdm to type-check tanda is not worth it.
+module = "tqdm.*"
+ignore_missing_imports = true
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src"]
+strict = true
+warn_unreachable = true

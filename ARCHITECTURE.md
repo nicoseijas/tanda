@@ -11,6 +11,7 @@ src/
     ├── pool.py           # Pool — public API
     ├── retry.py          # RetryPolicy — attempts + backoff
     ├── progress.py       # ProgressReporter and implementations
+    ├── tqdm_progress.py  # optional tqdm adapter (imports tqdm lazily)
     ├── cancellation.py   # global cancellation state
     ├── results.py        # TaskResult / TaskFailure / BatchResult
     ├── exceptions.py     # stable public errors (TaskError, ...)

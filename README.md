@@ -94,8 +94,12 @@ with Pool(workers=16) as pool:
 Not published to PyPI yet — see [Status](#status).
 
 ```bash
-pip install tanda
+pip install tanda           # no dependencies
+pip install "tanda[tqdm]"   # adds TqdmProgress
 ```
+
+Python 3.10+. The package ships type information (`py.typed`), so your type
+checker sees the annotated API without stubs.
 
 ## Design
 
@@ -130,11 +134,14 @@ and tested: bounded submission, `map()` and `imap_unordered()`, retries,
 policies, progress reporting, and graceful shutdown. Everything in the
 examples runs today.
 
-The adversarial test suite (10k-item batches, the timeout/completion and
-error/cancellation races, reentrancy) and the benchmark suite with a frozen
-overhead budget are in place. Packaging is what remains before a first
-release. `imap()` (ordered streaming) and a job-handle API are planned after
-that — see the [issues](https://github.com/nicoseijas/tanda/issues).
+The three things that were pending before a first release are done: the
+adversarial test suite (10k-item batches, the timeout/completion and
+error/cancellation races, reentrancy), the benchmark suite with a frozen
+overhead budget, and packaging — a typed distribution that builds clean and
+is tested on 3.10–3.13 across Linux and Windows. What remains is tagging
+`0.1.0` and publishing it. `imap()` (ordered streaming) and a job-handle API
+come after that — see the
+[issues](https://github.com/nicoseijas/tanda/issues).
 
 The surface may still change until `0.1.0` is tagged.
 

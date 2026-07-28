@@ -160,7 +160,9 @@ def test_null_progress_is_silent():
 
 def test_callback_progress_reports_completed_and_total():
     seen = []
-    reporter = CallbackProgress(lambda completed, total: seen.append((completed, total)))
+    reporter = CallbackProgress(
+        lambda completed, total: seen.append((completed, total))
+    )
     with Pool(workers=2) as pool:
         pool.map([1, 2, 3], lambda x: x, progress=reporter)
 
@@ -168,7 +170,8 @@ def test_callback_progress_reports_completed_and_total():
     assert [c for c, _ in seen] == sorted(c for c, _ in seen)  # monotonic
     # finish() must not re-deliver what the last advance already reported.
     assert len(seen) == len(set(enumerate(seen)))  # trivially true, keep pairs
-    assert all(a != b for a, b in zip(seen, seen[1:]))  # no consecutive dupes
+    # no consecutive duplicates
+    assert all(a != b for a, b in zip(seen, seen[1:], strict=False))
 
 
 def test_reporter_exception_does_not_mask_the_task_outcome(caplog):

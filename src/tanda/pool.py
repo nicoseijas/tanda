@@ -18,8 +18,8 @@ from typing import Final, Literal, NoReturn, TypeVar, cast, overload
 from tanda._scheduler import BoundedScheduler, WorkItem, default_max_pending
 from tanda._states import TaskState
 from tanda.cancellation import Cancellation
-from tanda.progress import DefaultProgress, ProgressReporter
 from tanda.exceptions import Cancelled, ShutdownTimeout, TaskError, TaskTimeout
+from tanda.progress import DefaultProgress, ProgressReporter
 from tanda.results import BatchResult, TaskFailure, TaskResult
 from tanda.retry import RetryPolicy
 
@@ -57,7 +57,8 @@ def _resolve_reporter(progress: bool | ProgressReporter) -> ProgressReporter | N
         return None
     if progress is True:
         return DefaultProgress()
-    if all(callable(getattr(progress, m, None)) for m in ("start", "advance", "finish")):
+    methods = ("start", "advance", "finish")
+    if all(callable(getattr(progress, name, None)) for name in methods):
         return progress
     raise TypeError(
         "progress must be a bool or an object with start/advance/finish, "

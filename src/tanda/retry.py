@@ -70,7 +70,7 @@ class RetryPolicy:
         if self.backoff == 0:
             return 0.0
         if self.backoff_strategy == "exponential":
-            delay = self.backoff * (2 ** (attempts - 1))
+            delay = self.backoff * 2.0 ** (attempts - 1)
         else:
             delay = self.backoff
         if self.jitter:

@@ -29,7 +29,9 @@ if __name__ == "__main__":
         batch = pool.map(
             items,
             unreliable,
-            retry=RetryPolicy(max_attempts=3, retry_on=(ConnectionError,), backoff=0.05),
+            retry=RetryPolicy(
+                max_attempts=3, retry_on=(ConnectionError,), backoff=0.05
+            ),
             progress=True,
             error_policy="collect",
         )
