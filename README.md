@@ -1,5 +1,10 @@
 # tanda
 
+[![CI](https://github.com/nicoseijas/tanda/actions/workflows/ci.yml/badge.svg)](https://github.com/nicoseijas/tanda/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/tanda)](https://pypi.org/project/tanda/)
+[![Python versions](https://img.shields.io/pypi/pyversions/tanda)](https://pypi.org/project/tanda/)
+[![License: MIT](https://img.shields.io/pypi/l/tanda)](https://github.com/nicoseijas/tanda/blob/main/LICENSE)
+
 A small execution layer over `concurrent.futures.ThreadPoolExecutor` for
 running many I/O-bound jobs at once — with bounded memory, progress, retries,
 timeouts, cancellation, and a Ctrl+C that actually works.

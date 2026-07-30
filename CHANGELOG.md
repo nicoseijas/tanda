@@ -4,7 +4,7 @@ Notable changes, newest first. Versions follow
 [semantic versioning](https://semver.org); anything under `0.x` may still
 change its surface, and this file says so when it does.
 
-## Unreleased
+## 0.2.0 — 2026-07-30
 
 ### Added
 
