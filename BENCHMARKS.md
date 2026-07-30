@@ -26,16 +26,20 @@ python 3.13.3 | Windows AMD64 | cpython
 
 ```text
 No-op tasks (50,000 items, 8 workers)
-  ThreadPoolExecutor.map     278.2 ms  (median 299.8 ms)
-  tanda Pool.map             398.7 ms  (median 499.2 ms)   (+43%)
-  tanda imap_unordered       487.2 ms  (median 505.3 ms)   (+75%)
+  ThreadPoolExecutor.map     259.3 ms  (median 279.0 ms)
+  tanda Pool.map             387.2 ms  (median 500.6 ms)   (+49%)
+  tanda imap                 490.3 ms  (median 517.3 ms)   (+89%)
+  tanda imap_unordered       484.7 ms  (median 497.9 ms)   (+87%)
 ```
 
 tanda loses this one, by design and by construction. With nothing to wait for,
 every microsecond of coordination is overhead, and the coordinator does
 strictly more per item than `executor.map`: a `WorkItem` with a lock, a state
-machine, a completion wait, an ordered collection step. Roughly 2.4 µs per
-item for `map`, 4.2 µs for `imap_unordered`.
+machine, a completion wait, an ordered collection step. Roughly 2.6 µs per
+item for `map`, 4.6 µs for the streaming variants. `imap`'s reorder buffer
+is nearly free here: on uniform tasks completions arrive close to input
+order, so results pass straight through — the buffer's real cost is memory
+under skewed workloads, not time.
 
 That is the cost of the lifecycle. It is worth paying when a task waits on a
 network, and not worth paying when it does not — which is the same thing as
@@ -96,6 +100,7 @@ Frozen after measuring, per [GUIDELINES.md](GUIDELINES.md):
 | Scenario | Budget (best-of-five vs raw `ThreadPoolExecutor`) |
 |---|---|
 | No-op `map()` | ≤ +60% |
+| No-op `imap()` | ≤ +100% |
 | No-op `imap_unordered()` | ≤ +100% |
 | I/O-bound workload | ≤ +5% |
 

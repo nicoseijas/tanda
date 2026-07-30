@@ -4,6 +4,20 @@ Notable changes, newest first. Versions follow
 [semantic versioning](https://semver.org); anything under `0.x` may still
 change its surface, and this file says so when it does.
 
+## Unreleased
+
+### Added
+
+- `Pool.imap()` — the streaming counterpart of `map()`: yields results in
+  input order as they become ready, without waiting for the whole batch.
+  Out-of-order completions are buffered until their turn; futures stay
+  bounded by `max_pending`, but one slow head item can grow that result
+  buffer up to O(completed) — `imap_unordered()` remains the
+  constant-memory stream. Error semantics match `map()`: the first
+  definitive failure cancels pending work and raises immediately. This
+  completes the three-function surface (`map`/`imap`/`imap_unordered`)
+  planned in GUIDELINES.md.
+
 ## 0.1.0 — 2026-07-28
 
 First release. Everything below is what it ships with.

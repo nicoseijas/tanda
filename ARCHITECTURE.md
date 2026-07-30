@@ -104,8 +104,15 @@ slot, which pulls one more item. Consequences:
 
 - memory is O(window), not O(input size);
 - infinite or very large generators are safe;
-- backpressure is inherent — a slow consumer of `imap_unordered()` slows
-  submission instead of accumulating results.
+- backpressure is inherent — a slow consumer of `imap()` or
+  `imap_unordered()` slows submission instead of accumulating results.
+
+`imap()` reorders the completion stream back to input order in the `Pool`
+layer: out-of-order completions are held in a buffer until their index's
+turn. The window still bounds futures and submissions, but the buffer holds
+finished results and is not window-bounded — a slow head item lets it grow
+up to O(completed). The scheduler is unaware of this; ordering is purely a
+consumer-side concern.
 
 ## Timeout handling
 
@@ -148,9 +155,9 @@ Ownership is enforced in `Pool`, not the scheduler: a small lock guards the
 identity of the thread currently running a batch. Only that thread may call
 `close()`, which is what makes `shutdown(cancel_futures=True)` safe — no
 `run()` loop can be waiting on the futures being drained. The claim is taken
-on `map()` entry, and on the *first resumption* of an `imap_unordered()`
-stream (never at call time — a stream that is created and never iterated
-must not leave the pool looking busy). It spans the stream's suspensions, so
+on `map()` entry, and on the *first resumption* of an `imap()` or
+`imap_unordered()` stream (never at call time — a stream that is created
+and never iterated must not leave the pool looking busy). It spans the stream's suspensions, so
 another thread cannot slip a batch in between two yields.
 
 Every coordinator wait is capped at a 0.5 s slice — unconditionally, not

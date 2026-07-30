@@ -47,8 +47,9 @@ with Pool(workers=16) as pool:
 ## What you get
 
 - **Ordered results by default.** `pool.map(["a", "b", "c"], fn)` returns
-  results in input order, regardless of completion order. Use
-  `imap_unordered()` to consume results as they finish.
+  results in input order, regardless of completion order. `imap()` streams
+  them in input order as they become ready; `imap_unordered()` yields in
+  completion order when input order doesn't matter.
 - **Bounded submission.** Input iterables are consumed lazily; only a limited
   window of tasks (roughly `workers × 4`) is in flight at any time. A
   100-million-item generator runs in constant memory instead of creating
@@ -126,10 +127,10 @@ Full numbers, methodology, and the frozen overhead budget:
 
 ## Status
 
-`0.1.0`, the first release. The batch lifecycle described above is
-implemented and tested: bounded submission, `map()` and `imap_unordered()`,
-retries, `task_timeout` and `overall_timeout`, cooperative cancellation,
-error policies, progress reporting, and graceful shutdown. The suite is
+The batch lifecycle described above is implemented and tested: bounded
+submission, `map()`, `imap()`, and `imap_unordered()`, retries,
+`task_timeout` and `overall_timeout`, cooperative cancellation, error
+policies, progress reporting, and graceful shutdown. The suite is
 adversarial rather than happy-path — 10k-item batches, the
 timeout-versus-completion and error-versus-cancellation races, backpressure,
 reentrancy — and runs on 3.10–3.13 across Linux and Windows. Measured
@@ -137,8 +138,8 @@ overhead and the frozen budget are in [BENCHMARKS.md](BENCHMARKS.md).
 
 It is `0.x`: the documented surface is what tanda commits to, and a change
 to it comes with a minor bump and a [CHANGELOG](CHANGELOG.md) entry, not a
-silent redefinition. `imap()` (ordered streaming) and a job-handle API are
-next — see the [issues](https://github.com/nicoseijas/tanda/issues).
+silent redefinition. A job-handle API and opt-in stats are next — see the
+[issues](https://github.com/nicoseijas/tanda/issues).
 
 ## License
 

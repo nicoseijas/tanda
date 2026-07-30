@@ -121,6 +121,33 @@ def test_imap_unordered_advances_as_items_complete():
     assert reporter.events[-1] == ("finish",)
 
 
+def test_imap_advances_on_completion_not_on_yield():
+    gate = threading.Event()
+
+    class GateOnAdvance(Recorder):
+        def advance(self, n=1):
+            super().advance(n)
+            gate.set()
+
+    reporter = GateOnAdvance()
+
+    def fn(item):
+        if item == "slow":
+            # Only "fast"'s completion being observed — an advance firing
+            # while nothing has been yielded yet — can open this gate. If
+            # advance fired on yield instead, "slow" (the head item) could
+            # never be yielded and this wait would fail the test.
+            assert gate.wait(WAIT)
+        return item
+
+    with Pool(workers=2) as pool:
+        stream = pool.imap(["slow", "fast"], fn, progress=reporter)
+        assert reporter.events[0] == ("start", 2)
+        assert list(stream) == ["slow", "fast"]
+    assert reporter.advances == 2
+    assert reporter.events[-1] == ("finish",)
+
+
 def test_collect_mode_drives_progress_too():
     reporter = Recorder()
     with Pool(workers=2) as pool:

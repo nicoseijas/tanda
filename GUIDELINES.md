@@ -77,8 +77,13 @@ for result in pool.imap_unordered(items, process):
     consume(result)
 ```
 
-Planned surface: `map()`, `imap()`, `imap_unordered()` — three functions with
-clear contracts, not one function with mode flags.
+The surface: `map()`, `imap()`, `imap_unordered()` — three functions with
+clear contracts, not one function with mode flags. `imap()` streams in input
+order: result `i` is yielded as soon as items `0..i` have completed.
+Out-of-order completions are buffered until their turn — futures stay bounded
+by `max_pending`, but the buffer holds finished results and one slow head item
+can grow it up to O(completed). That trade-off is documented, not hidden;
+`imap_unordered()` is the constant-memory stream.
 
 ## Bounded submission and backpressure
 
@@ -299,7 +304,8 @@ logged as a warning instead of propagating.
 ### One coordinator per pool
 
 A pool belongs to the thread that drives it, and the rule is enforced, not
-just documented. A second thread entering `map()`/`imap_unordered()`, or
+just documented. A second thread entering `map()`/`imap()`/
+`imap_unordered()`, or
 calling `close()` while a batch runs, raises `RuntimeError`. So does a task
 function calling back into its own pool — it runs on a worker thread, so the
 same check catches it.
@@ -340,6 +346,7 @@ Pool(workers=None, max_pending=None, *, shutdown_timeout=None)
 pool.map(items, fn, *, progress=False, retry=None,
          task_timeout=None, overall_timeout=None,
          cancel=None, error_policy="raise")
+pool.imap(...)                    # same, without error_policy; input order
 pool.imap_unordered(...)          # same, without error_policy
 pool.close(timeout=...)           # secondary; the with block is the path
 
@@ -381,6 +388,7 @@ not chosen in advance — it was measured first and then frozen:
 | Scenario | Budget |
 |---|---|
 | No-op `map()` | ≤ +60% |
+| No-op `imap()` | ≤ +100% |
 | No-op `imap_unordered()` | ≤ +100% |
 | I/O-bound workload | ≤ +5% |
 

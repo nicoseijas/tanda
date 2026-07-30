@@ -144,8 +144,9 @@ class Pool:
     in constant memory.
 
     A Pool belongs to one coordinator thread, and that contract is enforced
-    rather than merely documented: a second thread entering ``map()`` or
-    ``imap_unordered()``, or calling ``close()`` while a batch runs, raises
+    rather than merely documented: a second thread entering ``map()``,
+    ``imap()``, or ``imap_unordered()``, or calling ``close()`` while a
+    batch runs, raises
     ``RuntimeError``. This covers reentrancy too — a task function calling
     back into its own pool runs on a worker thread, so it fails loudly
     instead of waiting for slots that only its own caller can free. Without
@@ -372,6 +373,104 @@ class Pool:
                 "internal invariant violated: non-contiguous result indices "
                 f"(missing {exc.args[0]})"
             ) from exc
+
+    def imap(
+        self,
+        items: Iterable[T],
+        fn: Callable[[T], R],
+        *,
+        retry: RetryPolicy | None = None,
+        task_timeout: float | None = None,
+        overall_timeout: float | None = None,
+        cancel: Cancellation | None = None,
+        progress: bool | ProgressReporter = False,
+    ) -> Iterator[R]:
+        """Apply ``fn`` to every item, yielding results in input order.
+
+        The streaming counterpart of ``map()``: result ``i`` is yielded as
+        soon as items ``0..i`` have all completed, without waiting for the
+        rest of the batch. Completions that arrive out of order are held in
+        an internal buffer until their turn. Task submission stays bounded
+        by ``max_pending``, but that buffer holds finished *results* and is
+        not bounded by the window: one slow head item can grow it up to
+        O(completed) while later items finish behind it. When completion
+        order is acceptable, ``imap_unordered()`` streams in constant
+        memory.
+
+        Error semantics match ``map()``: the first definitive failure
+        cancels pending tasks and raises immediately — in completion order,
+        even if earlier-index results were still being held. Everything
+        else follows ``imap_unordered()``: close the iterator if you stop
+        consuming early, and with ``progress`` the reporter starts eagerly
+        at call time, advances when an item *completes* (not when its
+        result is yielded), and finishes in the stream's cleanup.
+        """
+        _validate_timeouts(task_timeout, overall_timeout)
+        if self._scheduler is None:
+            # Raise here, at call time, not lazily inside the generator.
+            raise RuntimeError("Pool is closed")
+        reporter = _resolve_reporter(progress)
+        if reporter is not None:
+            _report(reporter.start, _total_of(items))
+        return self._stream_ordered(
+            items, fn, retry, task_timeout, overall_timeout, cancel, reporter
+        )
+
+    def _stream_ordered(
+        self,
+        items: Iterable[T],
+        fn: Callable[[T], R],
+        retry: RetryPolicy | None,
+        task_timeout: float | None,
+        overall_timeout: float | None,
+        cancel: Cancellation | None,
+        reporter: ProgressReporter | None,
+    ) -> Iterator[R]:
+        # Same closed-state discipline as _stream_unordered, checked before
+        # EVERY resumption — including yields served from the reorder
+        # buffer. Buffered values don't touch the scheduler, but serving
+        # them after close() would make post-close behavior depend on which
+        # completions happened to be buffered; a deterministic error wins.
+        scheduler = self._scheduler
+        if scheduler is None:
+            raise RuntimeError("Pool is closed")
+        # As in _stream_unordered, the run is claimed on first resumption,
+        # not at imap() call time: a stream that is created and never
+        # iterated must not leave the pool looking permanently busy.
+        with self._active_run():
+            completion_stream = scheduler.run(
+                items, fn, retry, task_timeout, overall_timeout, cancel
+            )
+            # Completed values whose turn has not come. Unwrapped at pull
+            # time so a failure raises fail-fast, never sits buffered.
+            held: dict[int, R] = {}
+            next_index = 0
+            try:
+                while True:
+                    if self._scheduler is None:
+                        raise RuntimeError("Pool was closed while streaming")
+                    if next_index in held:
+                        yield held.pop(next_index)
+                        next_index += 1
+                        continue
+                    try:
+                        work = next(completion_stream)
+                    except StopIteration:
+                        break
+                    if reporter is not None:
+                        _report(reporter.advance)
+                    held[work.index] = _successful_value(work)
+            finally:
+                # Runs on close(), exhaustion, or an in-flight failure: cancel
+                # not-yet-started tasks deterministically.
+                completion_stream.close()
+                if reporter is not None:
+                    _report(reporter.finish)
+            if held:
+                raise RuntimeError(
+                    "internal invariant violated: non-contiguous result "
+                    f"indices (missing {next_index})"
+                )
 
     def imap_unordered(
         self,

@@ -40,10 +40,17 @@ def _tanda_streaming() -> None:
             pass
 
 
+def _tanda_streaming_ordered() -> None:
+    with Pool(workers=WORKERS) as pool:
+        for _ in pool.imap(range(ITEMS), _noop):
+            pass
+
+
 def run() -> list[Timing]:
     timings = [
         time_it("ThreadPoolExecutor.map", _stdlib),
         time_it("tanda Pool.map", _tanda),
+        time_it("tanda imap", _tanda_streaming_ordered),
         time_it("tanda imap_unordered", _tanda_streaming),
     ]
     print_timings(

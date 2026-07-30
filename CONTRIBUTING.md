@@ -22,7 +22,8 @@ coverage areas:
 
 **Basics**
 
-- `map` preserves input order; `imap_unordered` yields in completion order
+- `map` preserves input order; `imap` streams in input order;
+  `imap_unordered` yields in completion order
 - empty iterable, single item, generator input
 - an exception in the worker function propagates as specified
 
