@@ -26,20 +26,20 @@ python 3.13.3 | Windows AMD64 | cpython
 
 ```text
 No-op tasks (50,000 items, 8 workers)
-  ThreadPoolExecutor.map     259.3 ms  (median 279.0 ms)
-  tanda Pool.map             387.2 ms  (median 500.6 ms)   (+49%)
-  tanda imap                 490.3 ms  (median 517.3 ms)   (+89%)
-  tanda imap_unordered       484.7 ms  (median 497.9 ms)   (+87%)
+  ThreadPoolExecutor.map     300.1 ms  (median 331.9 ms)
+  tanda Pool.map             435.2 ms  (median 479.9 ms)   (+45%)
+  tanda imap                 464.2 ms  (median 470.5 ms)   (+55%)
+  tanda imap_unordered       464.3 ms  (median 470.1 ms)   (+55%)
 ```
 
 tanda loses this one, by design and by construction. With nothing to wait for,
 every microsecond of coordination is overhead, and the coordinator does
 strictly more per item than `executor.map`: a `WorkItem` with a lock, a state
-machine, a completion wait, an ordered collection step. Roughly 2.6 µs per
-item for `map`, 4.6 µs for the streaming variants. `imap`'s reorder buffer
-is nearly free here: on uniform tasks completions arrive close to input
-order, so results pass straight through — the buffer's real cost is memory
-under skewed workloads, not time.
+machine, a completion wait, an ordered collection step. Roughly 2.7 µs per
+item for `map`, 3.3 µs for the streaming variants. `imap`'s reorder buffer
+costs nothing measurable over `imap_unordered` here: on uniform tasks
+completions arrive close to input order, so results pass straight through —
+the buffer's real cost is memory under skewed workloads, not time.
 
 That is the cost of the lifecycle. It is worth paying when a task waits on a
 network, and not worth paying when it does not — which is the same thing as
@@ -49,8 +49,8 @@ saying tanda is for I/O-bound work.
 
 ```text
 Simulated I/O (1,000 tasks, 5-20 ms each, 32 workers)
-  ThreadPoolExecutor.map     593.4 ms
-  tanda Pool.map             593.8 ms   (+0%)
+  ThreadPoolExecutor.map     591.6 ms
+  tanda Pool.map             593.2 ms   (+0%)
 ```
 
 Microseconds of coordination against milliseconds of waiting: the overhead
@@ -61,12 +61,12 @@ disappears into the noise. Both implementations sit on the ideal time,
 
 ```text
 Retries, no backoff (2,000 items, 10% transient failures, 16 workers)
-  hand-rolled retry loop      13.4 ms
-  tanda RetryPolicy           25.4 ms   (+89%)
+  hand-rolled retry loop      12.0 ms
+  tanda RetryPolicy           23.7 ms   (+98%)
 
 Retries, 10 ms backoff (same workload)
-  hand-rolled, sleep in worker      136.9 ms
-  tanda, backoff in coordinator      56.7 ms   (-59%)
+  hand-rolled, sleep in worker      135.8 ms
+  tanda, backoff in coordinator      51.8 ms   (-62%)
 ```
 
 Two different results, and both are honest. Re-running a failed item costs
@@ -84,7 +84,7 @@ parks the item in the coordinator and frees the worker immediately.
 ```text
 Peak memory over 1,000,000 input items
   submit-all     peak   1715.7 MB
-  tanda bounded  peak      0.2 MB   (10,803x less)
+  tanda bounded  peak      0.1 MB   (11,444x less)
 ```
 
 Both sides run the same no-op over the same million items and discard results

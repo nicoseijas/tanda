@@ -157,8 +157,9 @@ identity of the thread currently running a batch. Only that thread may call
 `run()` loop can be waiting on the futures being drained. The claim is taken
 on `map()` entry, and on the *first resumption* of an `imap()` or
 `imap_unordered()` stream (never at call time — a stream that is created
-and never iterated must not leave the pool looking busy). It spans the stream's suspensions, so
-another thread cannot slip a batch in between two yields.
+and never iterated must not leave the pool looking busy). It spans the
+stream's suspensions, so another thread cannot slip a batch in between two
+yields.
 
 Every coordinator wait is capped at a 0.5 s slice — unconditionally, not
 only when a `Cancellation` token is in use. This bounds how long a

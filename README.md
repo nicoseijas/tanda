@@ -118,9 +118,9 @@ the task state machine — are written down before the code:
 On I/O-bound work — what tanda is for — the coordination overhead disappears
 into the waiting: 1000 tasks of 5–20 ms land within 1% of raw
 `ThreadPoolExecutor.map`. On 50,000 no-op tasks, where there is nothing to
-wait for, tanda is 43% slower; that is the price of the lifecycle, and it is
+wait for, tanda is 45% slower; that is the price of the lifecycle, and it is
 published rather than hidden. Over a 1M-item input, submit-all peaks at
-1.7 GB of futures against tanda's 0.2 MB.
+1.7 GB of futures against tanda's 0.1 MB.
 
 Full numbers, methodology, and the frozen overhead budget:
 [BENCHMARKS.md](BENCHMARKS.md).
